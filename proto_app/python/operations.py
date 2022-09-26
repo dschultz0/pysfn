@@ -2,7 +2,7 @@ from typing import List
 
 
 def step1(str_value: str, bool_value: bool) -> (bool, str, bool, int, int, str):
-    return True, "html", False, 4, 200, "text/html"
+    return True, str_value, False, 4, 200, "text/html"
 
 
 def step2(str_value: str, list_value: List[int]):
@@ -10,7 +10,10 @@ def step2(str_value: str, list_value: List[int]):
 
 
 def step3(str_value: str, str_value2: str, str_value3: str):
-    return True, "s3://mybucket/foo/XXXX.png", "s3://mybucket/foo/XXXX.pdf"
+    if str_value2 == "image":
+        return True, "s3://mybucket/foo/XXXX.png", None
+    else:
+        return True, None, "s3://mybucket/foo/XXXX.pdf"
 
 
 def step4(str_value: str):

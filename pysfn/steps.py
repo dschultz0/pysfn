@@ -1,7 +1,7 @@
 import inspect
 import ast
 import json
-from typing import Dict, Set, List, Callable, Mapping, Any, Deque, Union, Iterable
+from typing import Dict, Set, List, Callable, Mapping, Any, Union, Iterable
 from aws_cdk import (
     aws_stepfunctions as sfn,
     aws_stepfunctions_tasks as tasks,
@@ -177,7 +177,7 @@ class FunctionToSteps:
         if isinstance(test, ast.Name):
             # We'll want to check the var type to create appropriate conditions based on the type if defined
             return (
-                sfn.Condition.boolean_equals(f"$.register.{test.id}", True),
+                self._if_value(test.id, None),
                 f"If {test.id}",
             )
         elif isinstance(test, ast.Compare):
@@ -196,6 +196,40 @@ class FunctionToSteps:
                     f"If {test.left.id}=='{test.comparators[0].value}'",
                 )
         raise Exception(f"Unhandled test: {ast.dump(test)}")
+
+    @staticmethod
+    def _if_value(name, var_type=None):
+        param = f"$.register.{name}"
+        if isinstance(var_type, bool):
+            return sfn.Condition.boolean_equals(param, True)
+        elif isinstance(var_type, str):
+            return sfn.Condition.and_(
+                sfn.Condition.is_present(param),
+                sfn.Condition.not_(sfn.Condition.string_equals(param, "")),
+            )
+        elif isinstance(var_type, int) or isinstance(var_type, float):
+            return sfn.Condition.and_(
+                sfn.Condition.is_present(param),
+                sfn.Condition.not_(sfn.Condition.number_equals(param, 0)),
+            )
+        else:
+            return sfn.Condition.and_(
+                sfn.Condition.is_present(param),
+                sfn.Condition.or_(
+                    sfn.Condition.and_(
+                        sfn.Condition.is_boolean(param),
+                        sfn.Condition.boolean_equals(param, True),
+                    ),
+                    sfn.Condition.and_(
+                        sfn.Condition.is_string(param),
+                        sfn.Condition.not_(sfn.Condition.string_equals(param, "")),
+                    ),
+                    sfn.Condition.and_(
+                        sfn.Condition.is_numeric(param),
+                        sfn.Condition.not_(sfn.Condition.number_equals(param, 0)),
+                    ),
+                ),
+            )
 
     def handle_call_function(self, next_, stmt: Union[ast.Assign, ast.AnnAssign]):
         # Get the function call
