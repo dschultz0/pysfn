@@ -9,8 +9,17 @@ from aws_cdk import (
     Stack,
 )
 from aws_cdk.aws_stepfunctions import IntegrationPattern, JsonPath
+from dataclasses import dataclass
 
 SFN_INDEX = 0
+
+
+@dataclass
+class Retry:
+    errors: List[str]
+    interval_seconds: int
+    max_attempts: int
+    backoff_rate: float = None
 
 
 def state_machine(cdk_stack: Stack, sfn_name: str, local_values, express=False):
@@ -205,16 +214,19 @@ class FunctionToSteps:
         elif isinstance(var_type, str):
             return sfn.Condition.and_(
                 sfn.Condition.is_present(param),
+                sfn.Condition.is_not_null(param),
                 sfn.Condition.not_(sfn.Condition.string_equals(param, "")),
             )
         elif isinstance(var_type, int) or isinstance(var_type, float):
             return sfn.Condition.and_(
                 sfn.Condition.is_present(param),
+                sfn.Condition.is_not_null(param),
                 sfn.Condition.not_(sfn.Condition.number_equals(param, 0)),
             )
         else:
             return sfn.Condition.and_(
                 sfn.Condition.is_present(param),
+                sfn.Condition.is_not_null(param),
                 sfn.Condition.or_(
                     sfn.Condition.and_(
                         sfn.Condition.is_boolean(param),

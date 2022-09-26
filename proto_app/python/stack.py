@@ -9,7 +9,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 from pysfn.lmbda import PythonLambda, function_for_lambda
-from pysfn.steps import state_machine
+from pysfn.steps import state_machine, Retry
 import operations
 
 
@@ -144,8 +144,8 @@ class ProtoAppStack(Stack):
                 option,
             )
 
-        # Not supported yet
-        # @state_machine(self, "pysfn-larger")
+        # Not supported yet!!
+        # @state_machine(self, "pysfn-larger", locals())
         def larger(uri1: str, uri2: Union[str, None] = None):
             out_uri1: Union[str, None] = None
             out_uri4: Union[str, None] = None
@@ -154,7 +154,13 @@ class ProtoAppStack(Stack):
                 (out_uri1, value_count) = step5(uri2, uri1)
             job_id = start_job(uri1, uri2)
             sleep(10)
-            out_uri2, value_count = get_result(job_id).retry(10, 1.2, 40)
+            with Retry(
+                ["States.TaskFailed"],
+                interval_seconds=10,
+                backoff_rate=1.2,
+                max_attempts=40,
+            ):
+                out_uri2, value_count = get_result(job_id)
             out_uri3, value_count = step6(uri1)
             try:
                 alt_uri = step7(uri1)
