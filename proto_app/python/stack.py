@@ -29,34 +29,34 @@ class ProtoAppStack(Stack):
 
         base_lambda = PythonLambda(
             self,
-            "BasePython",
+            "pysfn-base-python",
             os.path.join(os.getcwd(), "python"),
             role=self.lambda_role,
             runtime=PythonLambda.PYTHON_3_9,
             timeout_minutes=1,
             memory_mb=1,
-            layers=["arn:aws:lambda:us-east-1:999999999999:layer:Utilities:2"],
+            # layers=["arn:aws:lambda:us-east-1:999999999999:layer:Utilities:2"],
             environment=None,
         )
         high_memory_lambda = PythonLambda(
             self,
-            "HighMemoryPython",
+            "pysfn-highmemory-python",
             os.path.join(os.getcwd(), "python"),
             role=self.lambda_role,
             runtime=PythonLambda.PYTHON_3_9,
             timeout_minutes=15,
             memory_mb=10,
-            layers=[
-                "arn:aws:lambda:us-east-1:999999999999:layer:Utilities:2",
-                "arn:aws:lambda:us-east-1:999999999999:layer:Additional:1",
-            ],
+            # layers=[
+            #    "arn:aws:lambda:us-east-1:999999999999:layer:Utilities:2",
+            #    "arn:aws:lambda:us-east-1:999999999999:layer:Additional:1",
+            # ],
             environment={"NLTK_DATA": "/opt/nltk"},
         )
 
         js_lambda = lmbda.Function(
             self,
             "JSLambda",
-            function_name="JSLambda",
+            function_name="pysfn-js",
             code=lmbda.Code.from_asset(
                 os.path.join(os.getcwd(), "js"), exclude=["node_modules"]
             ),
@@ -70,7 +70,9 @@ class ProtoAppStack(Stack):
         # Lambdas for the Basic SFN
         step1 = base_lambda.register(operations.step1)
         step2 = function_for_lambda(
-            js_lambda, ["strValue", "optParam"], ["resultURI", "available", "optParam"]
+            js_lambda,
+            {"strValue": str, "optParam": bool},
+            {"available": bool, "listValue": List[int], "resultURI": str},
         )
         step3 = high_memory_lambda.register(operations.step3)
         step4 = base_lambda.register(operations.step4)
@@ -84,20 +86,46 @@ class ProtoAppStack(Stack):
         step8 = base_lambda.register(operations.step8)
         step9 = base_lambda.register(operations.step9)
 
-        @state_machine(self, "Basic")
-        def basic(
-            str_value: str, list_value: List[int] = None, use_option: bool = False
-        ):
+        base_lambda.create_construct()
+        high_memory_lambda.create_construct()
+
+        @state_machine(self, "pysfn-simple", locals())
+        def simple(str_value: str, list_value: List[int] = None, option: bool = False):
             uri1: Union[str, None] = None
             uri2: Union[str, None] = None
             (
                 available,
                 mode,
-                use_option,
+                option,
                 processing_seconds,
                 code_value,
                 type_value,
-            ) = step1(str_value, use_option)
+            ) = step1(str_value, option)
+
+            if available:
+                (available, list_value, uri1) = step2(str_value, list_value)
+            return (
+                mode,
+                code_value,
+                processing_seconds,
+                available,
+                uri1,
+                uri2,
+                option,
+            )
+
+        @state_machine(self, "pysfn-basic", locals())
+        def basic(str_value: str, list_value: List[int] = None, option: bool = False):
+            uri1: Union[str, None] = None
+            uri2: Union[str, None] = None
+            (
+                available,
+                mode,
+                option,
+                processing_seconds,
+                code_value,
+                type_value,
+            ) = step1(str_value, option)
 
             if available:
                 if mode == "html":
@@ -113,10 +141,11 @@ class ProtoAppStack(Stack):
                 available,
                 uri1,
                 uri2,
-                use_option,
+                option,
             )
 
-        @state_machine(self, "Larger")
+        # Not supported yet
+        # @state_machine(self, "pysfn-larger")
         def larger(uri1: str, uri2: Union[str, None] = None):
             out_uri1: Union[str, None] = None
             out_uri4: Union[str, None] = None

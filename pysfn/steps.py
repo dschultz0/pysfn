@@ -1,7 +1,7 @@
-import dis
 import inspect
-from collections import deque
-from typing import Dict, Set, List, Callable, Mapping, Any, Deque, Union
+import ast
+import json
+from typing import Dict, Set, List, Callable, Mapping, Any, Deque, Union, Iterable
 from aws_cdk import (
     aws_stepfunctions as sfn,
     aws_stepfunctions_tasks as tasks,
@@ -9,12 +9,14 @@ from aws_cdk import (
     Stack,
 )
 from aws_cdk.aws_stepfunctions import IntegrationPattern, JsonPath
-from util import shortid
+
+SFN_INDEX = 0
 
 
-def state_machine(cdk_stack: Stack, sfn_name: str, express=False):
+def state_machine(cdk_stack: Stack, sfn_name: str, local_values, express=False):
     def decorator(func):
-        fts = FunctionToSteps(cdk_stack, func)
+        print([k for k in func.__globals__.keys() if k.startswith("step")])
+        fts = FunctionToSteps(cdk_stack, func, local_values)
         return sfn.StateMachine(
             cdk_stack,
             sfn_name,
@@ -29,144 +31,222 @@ def state_machine(cdk_stack: Stack, sfn_name: str, express=False):
 
 
 class FunctionToSteps:
-    def __init__(self, cdk_stack: Stack, func: Callable):
+    def __init__(self, cdk_stack: Stack, func: Callable, local_values):
+        global SFN_INDEX
         self.cdk_stack = cdk_stack
         self.func = func
+        self.local_values = local_values
+        self.state_number = 0
+        self.sfn_number = SFN_INDEX
+        SFN_INDEX += 1
 
-        dis.dis(self.func)
-        self.instructions: Deque[dis.Instruction]
-        self.instructions = deque(dis.get_instructions(self.func))
-        # print(list(self.instructions))
-        self.instructions.reverse()
+        # TODO: Should I use the AST instead of this to get the original parameters?
+        self.req_params, self.opt_params = _get_parameters(self.func)
 
-        self.frame: Deque[dis.Instruction]
-        self.frame = deque()
-
-        self.next_: Union[Callable, List[Callable], None]
-        self.next_ = None
-
-        self.req_params, self.opt_params = self._get_parameters()
+        # TODO: Replace this set with a dict that includes the argument types if provided
         self.variables: Set
         self.variables = set(self.req_params)
+
+        # Retrieve the source code for the function with any indent removed
+        src_code = inspect.getsource(func).split("\n")
+        indent = len(src_code[0]) - len(src_code[0].lstrip())
+        src_code = [c[indent:] for c in src_code]
+
+        # Build the AST
+        self.ast = ast.parse("\n".join(src_code))
+        with open(f"{func.__name__}_ast.txt", "w") as fp:
+            fp.write(ast.dump(self.ast, indent=2))
+
+        # Get the function root
+        if (
+            isinstance(self.ast, ast.Module)
+            and len(self.ast.body) == 1
+            and isinstance(self.ast.body[0], ast.FunctionDef)
+        ):
+            self.function_def: ast.FunctionDef
+            self.function_def = self.ast.body[0]
+        else:
+            raise Exception("Unexpected function definition")
+
+    def state_name(self, name):
+        self.state_number += 1
+        return f"{name} [{self.sfn_number}:{self.state_number}]"
 
     def build_sfn_definition(self):
 
         # The first step will always be to put the inputs on the register
         start = sfn.Pass(
             self.cdk_stack,
-            f"RegisterInput {shortid()}",
+            self.state_name("Register Input"),
             result_path=JsonPath.string_at("$.register"),
         )
-        self.next_ = start.next
+        next_ = start.next
 
         # For optional parameters we'll check if they are present and default them if they aren't
-        self._add_optional_parameter_steps(self.opt_params)
+        next_ = self._add_optional_parameter_steps(next_, self.opt_params)
 
-        while len(self.instructions) > 0:
-            inst = self.instructions.pop()
-
-            # Handle single value variable assignment
-            if inst.opcode == 125 and len(self.frame) == 1:
-                self._set_variable(inst)
-                self.frame.clear()
-
-            # Handle function invocation
-            elif inst.opcode == 131:
-                self._invoke_function(inst)
-                self.frame.clear()
-
-            # Handle if statement
-            elif inst.opcode == 114:  # POP_JUMP_IF_FALSE
-                self._handle_if(inst)
-                self.frame.clear()
-
-            # Handle else
-            elif inst.opcode == 110:  # JUMP_FORWARD
-                self.frame.clear()
-
-            else:
-                self.frame.append(inst)
+        # Get the root of the function body
+        self.handle_body(next_, self.function_def.body)
+        with open(f"{self.func.__name__}.json", "w") as fp:
+            json.dump(
+                {
+                    "StartAt": start.id,
+                    "States": {
+                        s.id: s.to_state_json()
+                        for s in sfn.State.find_reachable_states(start)
+                    },
+                },
+                fp,
+                indent=4,
+            )
         return start
 
-    def _get_parameters(self) -> (List[str], Mapping[str, Any]):
-        sig = inspect.signature(self.func)
-        req_params = [
-            p.name for p in sig.parameters.values() if p.default == inspect._empty
-        ]
-        opt_params = {
-            p.name: p.default
-            for p in sig.parameters.values()
-            if p.default != inspect._empty
-        }
-        return req_params, opt_params
+    def handle_body(self, next_, body: List[ast.stmt]):
+        for stmt in body:
+            next_ = self.handle_op(next_, stmt)
+        return next_
 
-    def _add_optional_parameter_steps(self, opt_params: Mapping[str, Any]):
+    def handle_op(self, next_, stmt: ast.stmt):
+        if isinstance(stmt, ast.AnnAssign) or isinstance(stmt, ast.Assign):
+            if isinstance(stmt.value, ast.Constant):
+                return self.handle_assign_value(next_, stmt)
+            elif isinstance(stmt.value, ast.Call):
+                return self.handle_call_function(next_, stmt)
+        elif isinstance(stmt, ast.If):
+            return self.handle_if(next_, stmt)
+        elif isinstance(stmt, ast.Return):
+            return self.handle_return(next_, stmt)
+
+        # Treat unhandled statements as a no-op
+        return next_
+
+    def _add_optional_parameter_steps(self, next_, opt_params: Mapping[str, Any]):
         for name, value in opt_params.items():
+            choice_name = self.state_name(f"Has {name}")
             assign = sfn.Pass(
                 self.cdk_stack,
-                f"Assign {name} default {shortid()}",
+                self.state_name(f"Assign {name} default"),
                 input_path=JsonPath.string_at("$.register"),
                 result_path=JsonPath.string_at("$.register"),
                 parameters=self.append_to_register_params({name: value}),
             )
-            choice = sfn.Choice(self.cdk_stack, f"Has {name}")
+            choice = sfn.Choice(self.cdk_stack, choice_name)
             choice.when(sfn.Condition.is_not_present(f"$.register.{name}"), assign)
-            self.next_step(choice, [choice.otherwise, assign.next])
+            next_ = next_step(next_, choice, [choice.otherwise, assign.next])
+        return next_
 
-    def _set_variable(self, inst):
+    def handle_assign_value(self, next_, stmt: Union[ast.AnnAssign, ast.Assign]):
+        if isinstance(stmt, ast.AnnAssign):
+            if isinstance(stmt.target, ast.Name):
+                var_name = stmt.target.id
+            else:
+                raise Exception(
+                    f"Unexpected assignment target of type {type(stmt.target)}"
+                )
+        else:
+            if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
+                var_name = stmt.targets[0].id
+            else:
+                raise Exception("Unexpected assignment")
+        if isinstance(stmt.value, ast.Constant):
+            value = stmt.value.value
+        else:
+            raise Exception(f"Unexpected assignment value of type {type(stmt.value)}")
         assign = sfn.Pass(
             self.cdk_stack,
-            f"Assign {inst.argval} {shortid()}",
+            self.state_name(f"Assign {var_name}"),
             input_path=JsonPath.string_at("$.register"),
             result_path=JsonPath.string_at("$.register"),
-            parameters=self.append_to_register_params(
-                {inst.argval: self.frame[0].argval}
-            ),
+            parameters=self.append_to_register_params({var_name: value}),
         )
-        self.next_step(assign, assign.next)
+        return next_step(next_, assign, assign.next)
 
-    def _handle_if(self, inst):
-        if len(self.frame) == 1:
-            arg = self.frame[0].argval
-            # TODO: Handle a wider range of non-boolean single value conditions
-            condition = sfn.Condition.boolean_equals(f"$.{arg}", True)
-            name = f"Is {arg} {shortid()}"
-        else:
-            pass
+    def handle_if(self, next_, stmt: ast.If):
+        condition, name = self.build_condition(stmt.test)
+        choice = sfn.Choice(self.cdk_stack, self.state_name(name))
 
-    def _invoke_function(self, inst):
-        # TODO: Add check that the function getting loaded (first step) is of the type we're interested in
-        nxt = self.instructions.pop()
-        response_values = []
-        # If unpack sequence
-        if nxt.opcode == 92:
-            for i in range(nxt.argval):
-                response_values.append(self.instructions.pop().argval)
-        elif nxt.opcode == 125:
-            response_values.append(nxt.argval)
+        def if_next(step):
+            choice.when(condition, step)
+
+        else_next = choice.otherwise
+        if_next = self.handle_body(if_next, stmt.body)
+        else_next = self.handle_body(else_next, stmt.orelse)
+        return next_step(next_, choice, [else_next, if_next])
+
+    def build_condition(self, test):
+        if isinstance(test, ast.Name):
+            # We'll want to check the var type to create appropriate conditions based on the type if defined
+            return (
+                sfn.Condition.boolean_equals(f"$.register.{test.id}", True),
+                f"If {test.id}",
+            )
+        elif isinstance(test, ast.Compare):
+            # Just going to handle simple comparison to string values for now
+            if (
+                isinstance(test.left, ast.Name)
+                and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
+                and len(test.comparators) == 1
+                and isinstance(test.comparators[0], ast.Constant)
+            ):
+                return (
+                    sfn.Condition.string_equals(
+                        f"$.register.{test.left.id}", test.comparators[0].value
+                    ),
+                    f"If {test.left.id}=='{test.comparators[0].value}'",
+                )
+        raise Exception(f"Unhandled test: {ast.dump(test)}")
+
+    def handle_call_function(self, next_, stmt: Union[ast.Assign, ast.AnnAssign]):
+        # Get the function call
+        call: ast.Call = stmt.value
+
+        # Get the parameters
+        param_names = [a.id for a in call.args]
+
+        # Get the result variable names
+        target = stmt.targets[0] if isinstance(stmt, ast.Assign) else stmt.target
+        if isinstance(target, ast.Name):
+            result_vars = [target.id]
+        elif isinstance(target, ast.Tuple):
+            result_vars = [n.id for n in target.elts]
         else:
-            raise Exception(f"Unexpected action after function invocation {nxt.opcode}")
-        func_name = self.frame.popleft().argval
-        args = [i.argval for i in self.frame]
-        id_ = shortid()
-        invoke = sfn.Pass(
+            raise Exception(f"Unexpected result target of type {type(stmt.target)}")
+
+        func = self.local_values[call.func.id]
+        params = {
+            a: JsonPath.string_at(f"$.register.{p}")
+            for a, p in zip(func.definition.args.keys(), param_names)
+        }
+        if hasattr(func, "get_additional_params"):
+            params.update(func.get_additional_params())
+        invoke = tasks.LambdaInvoke(
             self.cdk_stack,
-            f"Call {func_name} {id_}",
+            self.state_name(f"Call {call.func.id}"),
+            lambda_function=func.get_lambda(),
+            payload=sfn.TaskInput.from_object(params),
             result_path=JsonPath.string_at("$.register.out"),
-            parameters={a: JsonPath.string_at(f"$.register.{a}") for a in args},
-            result=sfn.Result.from_object({v: v for v in response_values}),
         )
         register = sfn.Pass(
             self.cdk_stack,
-            f"Register {func_name} {id_}",
+            self.state_name(f"Register {call.func.id}"),
             input_path=JsonPath.string_at("$.register"),
             result_path=JsonPath.string_at("$.register"),
             parameters=self.append_to_register_params(
-                {v: JsonPath.string_at(f"$.out.{v}") for v in response_values},
+                func.definition.get_result_mapping(result_vars)
             ),
         )
         invoke.next(register)
-        self.next_step(invoke, register.next)
+        return next_step(next_, invoke, register.next)
+
+    def handle_return(self, next_, stmt: ast.Return):
+        param_names = [n.id for n in stmt.value.elts]
+        return_step = sfn.Pass(
+            self.cdk_stack,
+            self.state_name(f"Return"),
+            parameters={a: JsonPath.string_at(f"$.register.{a}") for a in param_names},
+        )
+        return next_step(next_, return_step, return_step.next)
 
     def append_to_register_params(self, values: Dict):
         params = values.copy()
@@ -180,10 +260,33 @@ class FunctionToSteps:
         self.variables.update(values.keys())
         return params
 
-    def next_step(self, start, end):
-        if isinstance(self.next_, list):
-            for i in self.next_:
-                i(start)
+
+def next_step(next_, start, end):
+    if isinstance(next_, list):
+        for i in flatten(next_):
+            i(start)
+    else:
+        next_(start)
+    return end
+
+
+def _get_parameters(func) -> (List[str], Mapping[str, Any]):
+    sig = inspect.signature(func)
+    req_params = [
+        p.name for p in sig.parameters.values() if p.default == inspect._empty
+    ]
+    opt_params = {
+        p.name: p.default
+        for p in sig.parameters.values()
+        if p.default != inspect._empty
+    }
+    return req_params, opt_params
+
+
+def flatten(items):
+    for x in items:
+        if isinstance(x, Iterable) and not isinstance(x, (str, bytes)):
+            for sub_x in flatten(x):
+                yield sub_x
         else:
-            self.next_(start)
-        self.next_ = end
+            yield x

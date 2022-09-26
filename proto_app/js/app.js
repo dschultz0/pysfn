@@ -5,7 +5,7 @@ exports.handler = async (event) => {
     const optParam = event.optParam ? event.optParam : "defaultValue"
     return {
         available: true,
-        optParam: optParam,
+        listValue: [100, 100],
         resultURI: "s3://mybucket/XXXXX.pdf"
     }
 }
