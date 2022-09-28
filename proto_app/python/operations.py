@@ -2,7 +2,7 @@ from typing import List
 
 
 def step1(str_value: str, bool_value: bool) -> (bool, str, bool, int, int, str):
-    return True, str_value, False, 4, 200, "text/html"
+    return str_value in ["html", "image", "pdf"], str_value, False, 4, 200, "text/html"
 
 
 def step2(str_value: str, list_value: List[int]):

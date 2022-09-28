@@ -3,10 +3,14 @@
 
 This package is an initial experiment in exploring ways to make AWS Step Functions more useful by allowing
 developers to build state machines in the same way they would write a Python function. Users can define
-state machines in their CDK Stack definition as simple functions, then apply a `@state_machine` to declare
-creation of a Construct in their stack.
+state machines in their CDK Stack as simple functions, then apply a `@state_machine` to declare
+a Construct in their stack.
 
-This very much an experiment and I welcome feedback on the viability and utility of this approach. 
+This is very much an experiment, and I welcome feedback on the viability and utility of this approach. 
+
+Note that because it's Python-based it will only work when used with Python CDK stacks, and not TypeScript or 
+other languages. Of course, your Lambdas can be written in any language, but Python Lambdas can take advantage
+of some additional features.
 
 ## Quick start
 There is a lot of good information below, but if you want to get started quickly and experiment with the
@@ -20,6 +24,19 @@ cdk deploy
 
 Note that you'll likely need to add the `pysfn` and `proto_app/python` directories to your PYTHONPATH so that
 they'll get picked up.
+
+Once you've deployed it, you can submit the step functions that have been created with the following input.
+
+```json
+{
+  "str_value": "html",
+  "list_value": [100, 100],
+  "option": false
+}
+```
+
+Replacing `html` with `image`, `pdf`, or some other value will trigger the different paths in the function, 
+and you can also test how default values are used by leaving off the `list_value` and `option` values.
 
 ## Why Step Functions?
 AWS Step Functions (SFN) is a useful tool for orchestrating processing steps in a serverless fashion. By providing 
@@ -41,7 +58,7 @@ To do this well, a developer needs to be aware of the inputs and outputs of each
 In addition, the use of jsonpath operations limits how these values can be assigned to the payload object. As a 
 result it's common to follow each processing step with a Pass stage to restructure the results into the payload
 appropriately. The alternative is to make each processing stage take on this responsibility within the processing
-flow; this works, but forces a very tight connection between the SFN definition and the Lambda or other code, and
+flow. This works, but forces a very tight connection between the SFN definition and the Lambda or other code, and
 removes the ability to flexibly use that component in a different context.
 
 # A new approach
@@ -180,7 +197,7 @@ in the **long** detail below.
       "ResultPath": "$.register.out",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "arn:aws:lambda:us-west-2:981332165467:function:pysfn-base-python",
+        "FunctionName": "arn:aws:lambda:us-west-2:999999999999:function:pysfn-base-python",
         "Payload": {
           "str_value.$": "$.register.str_value",
           "bool_value.$": "$.register.option",
@@ -294,7 +311,7 @@ in the **long** detail below.
       "ResultPath": "$.register.out",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "arn:aws:lambda:us-west-2:981332165467:function:pysfn-js",
+        "FunctionName": "arn:aws:lambda:us-west-2:999999999999:function:pysfn-js",
         "Payload": {
           "strValue.$": "$.register.str_value",
           "optParam.$": "$.register.list_value"
@@ -337,7 +354,7 @@ in the **long** detail below.
       "ResultPath": "$.register.out",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "arn:aws:lambda:us-west-2:981332165467:function:pysfn-highmemory-python",
+        "FunctionName": "arn:aws:lambda:us-west-2:999999999999:function:pysfn-highmemory-python",
         "Payload": {
           "str_value.$": "$.register.str_value",
           "str_value2.$": "$.register.mode",
@@ -441,7 +458,7 @@ in the **long** detail below.
       "ResultPath": "$.register.out",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "arn:aws:lambda:us-west-2:981332165467:function:pysfn-base-python",
+        "FunctionName": "arn:aws:lambda:us-west-2:999999999999:function:pysfn-base-python",
         "Payload": {
           "str_value.$": "$.register.uri1",
           "launcher_target": "step4"
@@ -484,14 +501,14 @@ in the **long** detail below.
 ```
 
 A few items to note with this result:
-* To avoid name conflicts when the CDK generates the flow, I've added an ID suffix to each stage.
+* To avoid name conflicts when the CDK generates the constructs, I've added an ID suffix to each stage.
 * I treat the `register` object within the payload as my version of `locals()` to maintain a clean
   view of the current set of vars. The first step copies the inputs into the register.
-* After this we address any optional parameters defined in the function signature. If they aren't present,
+* After this, we address any optional parameters defined in the function signature. If they aren't present,
   we set the default value.
 * This function sets defaults for two `uri` values which we set using Pass states.
 * The if operations are converted to Choice states with the appropriate conditions. Note that in the case
-  of the first Choice, we've the logic inserts a more complex condition to mimic Python boolean type coercion.
+  of the first and last Choice states, the logic inserts a complex condition to mimic Python boolean type coercion.
 * Each call to a Lambda function is followed by a generated Pass state to move the results into the register.
 
 ## About Lambdas...
@@ -500,15 +517,16 @@ to spend a lot of time writing code to parse the `event` object over and over. W
 use it to take advantage of the transpiler, most of the Lambda steps in the proto_app are based on 
 **launcher** logic I've included.
 
-The `step1` function in the `operations.py` module is defined as shown below. 
+The `step1` function in the `operations.py` module is defined as shown below. Note that this looks like any other 
+python function and could be referenced anywhere in your code. 
 
 ```python
 def step1(str_value: str, bool_value: bool) -> (bool, str, bool, int, int, str):
     return True, str_value, False, 4, 200, "text/html"
 ```
 
-Note that this looks like any other python function and could be referenced anywhere in your code. To pull 
-this into our stack we have to start by creating a Lambda that will hold the function. This looks like this:
+To pull this into our stack we have to start by creating a Lambda that will hold the function. 
+This looks like this:
 
 ```python
 base_lambda = PythonLambda(
@@ -519,7 +537,6 @@ base_lambda = PythonLambda(
     runtime=PythonLambda.PYTHON_3_9,
     timeout_minutes=1,
     memory_mb=1,
-    # layers=["arn:aws:lambda:us-east-1:999999999999:layer:Utilities:2"],
     environment=None,
 )
 ```
@@ -543,7 +560,7 @@ state in our state machine. Note the `launcher_target` value that is included in
       "ResultPath": "$.register.out",
       "Resource": "arn:aws:states:::lambda:invoke",
       "Parameters": {
-        "FunctionName": "arn:aws:lambda:us-west-2:981332165467:function:pysfn-base-python",
+        "FunctionName": "arn:aws:lambda:us-west-2:999999999999:function:pysfn-base-python",
         "Payload": {
           "str_value.$": "$.register.str_value",
           "bool_value.$": "$.register.option",
@@ -583,6 +600,36 @@ step2 = function_for_lambda(
 )
 ```
 
+By specifying the output values in the function declaration, it allows PySFN to map the results from 
+a call like this to the appropriate variables.
+
+```python
+(available, list_value, uri1) = step2(str_value, list_value)
+```
+
+In the step after the Lambda is invoked, a Pass state performs the mapping.
+
+```json
+"Register step2 [1:13]": {
+  "Type": "Pass",
+  "ResultPath": "$.register",
+  "InputPath": "$.register",
+  "Parameters": {
+    "available.$": "$.out.Payload.available",
+    "list_value.$": "$.out.Payload.listValue",
+    "uri1.$": "$.out.Payload.resultURI",
+    "code_value.$": "$.code_value",
+    "mode.$": "$.mode",
+    "processing_seconds.$": "$.processing_seconds",
+    "option.$": "$.option",
+    "type_value.$": "$.type_value",
+    "uri2.$": "$.uri2",
+    "str_value.$": "$.str_value"
+  },
+  "Next": "If uri1 [1:16]"
+}
+```
+
 # More to do!
 Right now I'm collecting feedback before I go too much further with this. There are a number of things to
 add before I'd say this is even alpha, including:
@@ -590,5 +637,5 @@ add before I'd say this is even alpha, including:
 * Add support for exception handling including try/except, as well as retry logic
 * Add support for Map and Parallel
 * Support the full range of likely conditions
-* Tree pruning to better handle if/elif/elif/else as well as assigning multiple variables
+* Tree shaking to better handle if/elif/elif/else, as well as assigning multiple variables
 * Support some common states such as calling another SFN or performing DynamoDB writes
