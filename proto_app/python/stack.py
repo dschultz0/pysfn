@@ -144,8 +144,7 @@ class ProtoAppStack(Stack):
                 option,
             )
 
-        # Not supported yet!!
-        # @state_machine(self, "pysfn-larger", locals())
+        @state_machine(self, "pysfn-larger", locals())
         def larger(uri1: str, uri2: Union[str, None] = None):
             out_uri1: Union[str, None] = None
             out_uri4: Union[str, None] = None

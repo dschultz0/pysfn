@@ -1,13 +1,13 @@
 import inspect
 import os
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from typing import List, Mapping, Union, Callable, Any
 from aws_cdk import (
     aws_lambda as lmbda,
     Duration,
     Stack,
 )
-from aws_cdk.aws_stepfunctions import IntegrationPattern, JsonPath
+from aws_cdk.aws_stepfunctions import JsonPath
 from util import shortid
 
 

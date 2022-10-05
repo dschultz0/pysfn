@@ -634,7 +634,7 @@ In the step after the Lambda is invoked, a Pass state performs the mapping.
 Right now I'm collecting feedback before I go too much further with this. There are a number of things to
 add before I'd say this is even alpha, including:
 * Take full advantage of Python type hints
-* Add support for exception handling including try/except, as well as retry logic
+* Support functions with kwonly or posonly args
 * Add support for Map and Parallel
 * Support the full range of likely conditions
 * Tree shaking to better handle if/elif/elif/else, as well as assigning multiple variables
