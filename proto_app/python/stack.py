@@ -160,7 +160,7 @@ class ProtoAppStack(Stack):
                 backoff_rate=1.2,
                 max_attempts=40,
             ):
-                out_uri2, value_count = get_result(job_id)
+                out_uri2, value_count = get_result(job_id, uri1, True)
             out_uri3, value_count = step6(uri1)
             try:
                 alt_uri = step7(uri1)

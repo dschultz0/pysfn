@@ -28,7 +28,7 @@ def start_job(str_value: str, str_value2: str):
     return "XXXXXXXX"
 
 
-def get_result(job_id):
+def get_result(job_id, uri, raise_incomplete):
     return "s3://mybucket/foo/XXXX.json", 60
 
 
