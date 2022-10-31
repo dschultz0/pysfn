@@ -1,9 +1,10 @@
 import inspect
 import ast
 import json
+import typing
 from dataclasses import dataclass
 from types import BuiltinFunctionType
-from typing import Dict, Set, List, Callable, Mapping, Any, Union, Iterable
+from typing import Dict, List, Callable, Mapping, Any, Union, Iterable
 
 from aws_cdk import (
     aws_stepfunctions as sfn,
@@ -31,6 +32,10 @@ class CatchHandler:
     errors: List[str]
     body: List[sfn.IChainable]
     result_path: str = "$.error-info"
+
+
+def concurrent(iterable, max_concurrency: int = None):
+    pass
 
 
 def state_machine(
@@ -67,12 +72,6 @@ class FunctionToSteps:
         self.skip_pass = skip_pass
         SFN_INDEX += 1
 
-        self.req_params, self.opt_params = _get_parameters(self.func)
-
-        # TODO: Replace this set with a dict that includes the argument types if provided
-        self.variables: Set[str]
-        self.variables = set(self.req_params)
-
         # Retrieve the source code for the function with any indent removed
         src_code = inspect.getsource(func).split("\n")
         indent = len(src_code[0]) - len(src_code[0].lstrip())
@@ -100,22 +99,63 @@ class FunctionToSteps:
 
     def build_sfn_definition(self):
 
-        # The first step will always be to put the inputs on the register
-        start = sfn.Pass(
-            self.cdk_stack,
-            self.state_name("Register Input"),
-            result_path=JsonPath.string_at("$.register"),
-        )
-        # For optional parameters we'll check if they are present and default them if they aren't
-        c, n = self.build_optional_parameter_steps(self.opt_params)
-        next_ = advance(start.next, c, n)
+        # TODO: Capture the parameter types to use elsewhere
+        req_params, opt_params = _get_parameters(self.func)
 
         # Get the root of the function body
-        c, n = self.handle_body(self.function_def.body)
+        scope = SFNScope(self)
+        start, next_ = scope.generate_entry_steps(req_params, opt_params)
+        c, n = scope.handle_body(self.function_def.body)
         advance(next_, c, n)
 
         write_definition_json(self.func.__name__, start)
         return start
+
+
+class SFNScope:
+    def __init__(self, fts: FunctionToSteps):
+        self.fts = fts
+        self.cdk_stack = fts.cdk_stack
+        self.state_name = fts.state_name
+        self.variables: Dict[str, typing.Type] = {}
+
+    def generate_entry_steps(
+        self, required_parameters, optional_parameters: Mapping[str, Any] = None
+    ):
+        self.variables.update({param: typing.Any for param in required_parameters})
+
+        # The first step will always be to put the inputs on the register
+        start = sfn.Pass(
+            self.cdk_stack, self.state_name("Register Input"), result_path="$.register",
+        )
+        # For optional parameters we'll check if they are present and default them if they aren't
+        c, n = self.build_optional_parameter_steps(optional_parameters)
+        next_ = advance(start.next, c, n)
+        return start, next_
+
+    def build_register_assignment(self, values: Dict, register_path: str = ""):
+        params = values.copy()
+        for k, v in params.items():
+            self._updated_var(k)
+            # CDK is dropping None from parameters for some reason, using this to hack around it
+            if v is None:
+                params[k] = ""
+        # Copy over any variables that aren't in the params
+        for v in self.variables.keys():
+            if v not in params:
+                params[v] = JsonPath.string_at(f"$.{register_path}{v}")
+        for key in values.keys():
+            if key not in self.variables:
+                # TODO: Assign the type of the value
+                self.variables[key] = typing.Any
+                self._added_var(key)
+        return params
+
+    def _added_var(self, var: str):
+        pass
+
+    def _updated_var(self, var: str):
+        pass
 
     def handle_body(self, body: List[ast.stmt]) -> (List[sfn.IChainable], Callable):
         chain = []
@@ -131,29 +171,52 @@ class FunctionToSteps:
 
     def handle_op(self, stmt: ast.stmt) -> (List[sfn.IChainable], Callable):
         if isinstance(stmt, ast.AnnAssign) or isinstance(stmt, ast.Assign):
-            if isinstance(stmt.value, ast.Constant):
-                return self.handle_assign_value(stmt)
-            elif isinstance(stmt.value, ast.Call):
+            # if isinstance(stmt.value, ast.Constant):
+            #    return self.handle_assign_value(stmt)
+            if isinstance(stmt.value, ast.Call) and isinstance(
+                stmt.value.func, ast.Name
+            ):
                 return self.handle_call_function(stmt.value, stmt)
+            if isinstance(stmt.value, ast.ListComp):
+                return self.handle_list_comp(stmt)
+            else:
+                return self.handle_assign_value(stmt)
         elif isinstance(stmt, ast.If):
             return self.handle_if(stmt)
         elif isinstance(stmt, ast.Return):
             return self.handle_return(stmt)
         elif isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call):
-            return self.handle_call_function(stmt.value)
+            if isinstance(stmt.value.func, ast.Name):
+                return self.handle_call_function(stmt.value)
+            elif isinstance(stmt.value.func, ast.Attribute):
+                if stmt.value.func.attr == "append":
+                    return self.handle_array_append(stmt.value)
+                elif stmt.value.func.attr == "extend":
+                    # TODO
+                    pass
         elif isinstance(stmt, ast.With):
             return self.handle_with(stmt)
         elif isinstance(stmt, ast.Try):
             return self.handle_try(stmt)
+        elif isinstance(stmt, ast.For):
+            return self.handle_for(stmt)
+        elif isinstance(stmt, ast.AugAssign) and (
+            isinstance(stmt.op, ast.Add) or isinstance(stmt.op, ast.Sub)
+        ):
+            # MathAdd isn't currently supported within the CDK
+            # https://github.com/aws/aws-cdk/issues/22629
+            # return self.handle_math_add(stmt)
+            pass
         elif isinstance(stmt, ast.Pass):
-            if self.skip_pass:
+            if self.fts.skip_pass:
                 return [], None
             else:
                 pass_step = sfn.Pass(self.cdk_stack, self.state_name("Pass"))
                 return [pass_step], pass_step.next
 
         # Treat unhandled statements as a no-op
-        print(f"Unhandled {str(stmt)}")
+        print(f"Unhandled {repr(stmt)}")
+        # print(ast.dump(stmt, indent=2))
         return [], None
 
     def handle_with(self, stmt: ast.With):
@@ -220,26 +283,200 @@ class FunctionToSteps:
                 return Retry(**params)
         raise Exception(f"Unhandled with operation: {call}")
 
-    def build_optional_parameter_steps(self, opt_params: Mapping[str, Any]):
-        chain = []
-        next_ = None
-        for name, value in opt_params.items():
-            choice_name = self.state_name(f"Has {name}")
-            assign = sfn.Pass(
+    def handle_for(self, stmt: ast.For):
+        # TODO: Support enumerate...
+        if (
+            isinstance(stmt.iter, ast.Call)
+            and isinstance(stmt.iter.func, ast.Name)
+            and stmt.iter.func.id == "concurrent"
+        ):
+            max_concurrency = stmt.iter.args[1].value
+            iter_var = stmt.iter.args[0].id
+        elif isinstance(stmt.iter, ast.Name):
+            max_concurrency = 0
+            iter_var = stmt.iter.id
+        else:
+            raise Exception("Unsupported for-loop iterator, variables only")
+        if not isinstance(stmt.target, ast.Name):
+            raise Exception("Unsupported for-loop target, variables only")
+
+        choice_name = self.state_name(f"Has {iter_var} to map")
+        map_state = sfn.Map(
+            self.cdk_stack,
+            self.state_name(f"For {iter_var}"),
+            max_concurrency=max_concurrency,
+            items_path=f"$.register.{iter_var}",
+            parameters={
+                "register.$": f"$.register",
+                f"{stmt.target.id}.$": "$$.Map.Item.Value",
+            },
+            result_path="$.loopResult",
+        )
+        choice = sfn.Choice(self.cdk_stack, choice_name)
+        choice.when(
+            sfn.Condition.and_(
+                sfn.Condition.is_present(f"$.register.{iter_var}"),
+                sfn.Condition.is_present(f"$.register.{iter_var}[0]"),
+            ),
+            map_state,
+        )
+
+        map_scope = MapScope(self)
+        entry_step = map_scope.build_entry_step(stmt.target.id)
+        chain, next_ = map_scope.handle_body(stmt.body)
+        entry_step.next(chain[0])
+
+        map_state.iterator(entry_step)
+        next_ = map_state.next
+        if map_scope.updated_vars:
+            params = {
+                v: JsonPath.string_at(f"$.loopResult[*].register.{v}[*]")
+                for v in map_scope.updated_vars
+            }
+            consolidate_step = sfn.Pass(
                 self.cdk_stack,
-                self.state_name(f"Assign {name} default"),
-                input_path=JsonPath.string_at("$.register"),
-                result_path=JsonPath.string_at("$.register"),
-                parameters=self.append_to_register_params({name: value}),
+                self.state_name(f"Consolidate map results"),
+                result_path="$.register",
+                parameters=self.build_register_assignment(
+                    params, "loopResult[0].register."
+                ),
             )
-            choice = sfn.Choice(self.cdk_stack, choice_name)
-            choice.when(sfn.Condition.is_not_present(f"$.register.{name}"), assign)
-            chain.extend([choice, assign])
-            if next_:
-                next_ = advance(next_, choice, [choice.otherwise, assign.next])
+            map_state.next(consolidate_step)
+            next_ = consolidate_step.next
+
+        return [choice, map_state], [choice.otherwise, next_]
+
+    def handle_list_comp(self, stmt: Union[ast.Assign, ast.AnnAssign]):
+        target = stmt.targets[0] if isinstance(stmt, ast.Assign) else stmt.target
+        if isinstance(target, ast.Name):
+            target = target.id
+        else:
+            raise Exception("Unsupported list comp target, variables only")
+
+        list_comp = stmt.value
+        if not isinstance(list_comp, ast.ListComp):
+            raise Exception("Unhandled list comp value")
+        if len(list_comp.generators) != 1:
+            raise Exception("List comp can only support a single generator")
+        comp = list_comp.generators[0]
+        if not isinstance(comp, ast.comprehension):
+            raise Exception(f"Unhandled generator {type(comp)}")
+
+        # TODO: Support enumerate...
+        if (
+            isinstance(comp.iter, ast.Call)
+            and isinstance(comp.iter.func, ast.Name)
+            and comp.iter.func.id == "concurrent"
+        ):
+            max_concurrency = comp.iter.args[1].value
+            iter_var = comp.iter.args[0].id
+        elif isinstance(comp.iter, ast.Name):
+            max_concurrency = 0
+            iter_var = comp.iter.id
+        else:
+            raise Exception("Unsupported list comp iterator, variables only")
+        if not isinstance(comp.target, ast.Name):
+            raise Exception("Unsupported list comp target, variables only")
+
+        choice_name = self.state_name(f"Has {iter_var} to map")
+        map_state = sfn.Map(
+            self.cdk_stack,
+            self.state_name(f"For {iter_var}"),
+            max_concurrency=max_concurrency,
+            items_path=f"$.register.{iter_var}",
+            parameters={
+                "register.$": f"$.register",
+                f"{comp.target.id}.$": "$$.Map.Item.Value",
+            },
+            result_path="$.loopResult",
+        )
+        choice = sfn.Choice(self.cdk_stack, choice_name)
+        choice.when(
+            sfn.Condition.and_(
+                sfn.Condition.is_present(f"$.register.{iter_var}"),
+                sfn.Condition.is_present(f"$.register.{iter_var}[0]"),
+            ),
+            map_state,
+        )
+
+        call_func = sfn.Pass(
+            self.cdk_stack,
+            self.state_name(f"Call function..."),
+            parameters={"loopResult": JsonPath.string_at(f"$.{comp.target.id}")},
+        )
+
+        map_state.iterator(call_func)
+        consolidate_step = sfn.Pass(
+            self.cdk_stack,
+            self.state_name(f"Consolidate map results"),
+            result_path="$.register",
+            parameters=self.build_register_assignment(
+                {target: JsonPath.string_at(f"$.loopResult[*][*]")},
+                "loopResult[0].register.",
+            ),
+        )
+        map_state.next(consolidate_step)
+
+        return [choice, map_state], [choice.otherwise, consolidate_step.next]
+
+    def handle_math_add(self, stmt: ast.AugAssign):
+        if isinstance(stmt.target, ast.Name):
+            target = stmt.target.id
+        else:
+            raise Exception(f"Unexpected MathAdd target {type(stmt.target)}")
+        if isinstance(stmt.value, ast.Constant):
+            if isinstance(stmt.op, ast.Add):
+                value = stmt.value.value
+            elif isinstance(stmt.op, ast.Sub):
+                value = -stmt.value.value
             else:
-                next_ = [choice.otherwise, assign.next]
-        return chain, next_
+                raise Exception(f"Unsupported MathAdd op {type(stmt.op)}")
+        else:
+            raise Exception(f"Unsupported MathAdd target {type(stmt.value)}")
+        add_step = sfn.Pass(
+            self.cdk_stack,
+            self.state_name(f"Add {value} to {target}"),
+            input_path="$.register",
+            result_path="$.register",
+            parameters=self.build_register_assignment(
+                {target: JsonPath.string_at(f"States.MathAdd($.{target}, {value})")}
+            ),
+        )
+        return [add_step], add_step.next
+
+    def handle_array_append(self, stmt: ast.Call):
+        array_name = stmt.func.value.id
+        array_path = f"$.register.{array_name}"
+        arg = stmt.args[0]
+        if isinstance(arg, ast.Name):
+            value = arg.id
+            path_to_add = f"$.register.{arg.id}"
+        elif isinstance(arg, ast.Constant):
+            value = arg.value
+            path_to_add = arg.value
+        else:
+            raise Exception(f"Unexpected type {type(arg)} for list append")
+        list_step = sfn.Pass(
+            self.cdk_stack,
+            self.state_name(f"Append {value} to {array_name}"),
+            result_path="$.meta",
+            parameters={
+                "arrayConcat": JsonPath.string_at(
+                    f"States.Array({array_path}, States.Array({path_to_add}))"
+                )
+            },
+        )
+        flatten_step = sfn.Pass(
+            self.cdk_stack,
+            self.state_name(f"Flatten {array_name}"),
+            result_path="$.register",
+            parameters=self.build_register_assignment(
+                {array_name: JsonPath.string_at("$.meta.arrayConcat[*][*]")},
+                "register.",
+            ),
+        )
+        list_step.next(flatten_step)
+        return [list_step, flatten_step], flatten_step.next
 
     def handle_assign_value(
         self, stmt: Union[ast.AnnAssign, ast.Assign]
@@ -256,16 +493,17 @@ class FunctionToSteps:
                 var_name = stmt.targets[0].id
             else:
                 raise Exception("Unexpected assignment")
-        if isinstance(stmt.value, ast.Constant):
-            value = stmt.value.value
-        else:
-            raise Exception(f"Unexpected assignment value of type {type(stmt.value)}")
+        value = self.generate_value_repr(stmt.value)
+        # if isinstance(stmt.value, ast.Constant):
+        #    value = stmt.value.value
+        # else:
+        #    raise Exception(f"Unexpected assignment value of type {type(stmt.value)}")
         assign = sfn.Pass(
             self.cdk_stack,
             self.state_name(f"Assign {var_name}"),
-            input_path=JsonPath.string_at("$.register"),
-            result_path=JsonPath.string_at("$.register"),
-            parameters=self.append_to_register_params({var_name: value}),
+            input_path="$.register",
+            result_path="$.register",
+            parameters=self.build_register_assignment({var_name: value}),
         )
         return [assign], assign.next
 
@@ -291,7 +529,7 @@ class FunctionToSteps:
         self, call: ast.Call, assign: Union[ast.Assign, ast.AnnAssign] = None,
     ) -> (List[sfn.IChainable], Callable):
         # Get the function
-        func = self.local_values.get(call.func.id)
+        func = self.fts.local_values.get(call.func.id)
 
         # Build the parameters
         if func:
@@ -315,7 +553,7 @@ class FunctionToSteps:
                 self.state_name(f"Call {call.func.id}"),
                 lambda_function=func.get_lambda(),
                 payload=sfn.TaskInput.from_object(params),
-                result_path=JsonPath.string_at("$.register.out"),
+                result_path="$.register.out",
             )
         else:
             raise Exception(f"Function without an associated Lambda: {call.func.id}")
@@ -335,12 +573,13 @@ class FunctionToSteps:
                 raise Exception(
                     f"Unexpected result target of type {type(assign.target)}"
                 )
+            # print(result_vars)
             register = sfn.Pass(
                 self.cdk_stack,
                 self.state_name(f"Register {call.func.id}"),
-                input_path=JsonPath.string_at("$.register"),
-                result_path=JsonPath.string_at("$.register"),
-                parameters=self.append_to_register_params(
+                input_path="$.register",
+                result_path="$.register",
+                parameters=self.build_register_assignment(
                     func.definition.get_result_mapping(result_vars)
                 ),
             )
@@ -378,18 +617,6 @@ class FunctionToSteps:
             raise Exception(f"Unhandled return value type {stmt.value}")
         return [return_step], return_step.next
 
-    def append_to_register_params(self, values: Dict):
-        params = values.copy()
-        # CDK is dropping None from parameters for some reason, using this to hack around it
-        for k, v in params.items():
-            if v is None:
-                params[k] = ""
-        for v in self.variables:
-            if v not in params:
-                params[v] = JsonPath.string_at(f"$.{v}")
-        self.variables.update(values.keys())
-        return params
-
     def build_parameters(self, call: ast.Call, func: Callable, gen_jsonpath=True):
         params = {}
 
@@ -412,10 +639,31 @@ class FunctionToSteps:
             params[kw.arg] = self.generate_value_repr(kw.value, gen_jsonpath)
         return params
 
+    def build_optional_parameter_steps(self, optional_parameters: Mapping[str, Any]):
+        chain = []
+        next_ = None
+        for name, value in optional_parameters.items():
+            choice_name = self.state_name(f"Has {name}")
+            assign = sfn.Pass(
+                self.cdk_stack,
+                self.state_name(f"Assign {name} default"),
+                input_path="$.register",
+                result_path="$.register",
+                parameters=self.build_register_assignment({name: value}),
+            )
+            choice = sfn.Choice(self.cdk_stack, choice_name)
+            choice.when(sfn.Condition.is_not_present(f"$.register.{name}"), assign)
+            chain.extend([choice, assign])
+            if next_:
+                next_ = advance(next_, choice, [choice.otherwise, assign.next])
+            else:
+                next_ = [choice.otherwise, assign.next]
+        return chain, next_
+
     def generate_value_repr(self, arg_value, gen_jsonpath=True):
         if isinstance(arg_value, ast.Name):
-            if arg_value.id not in self.variables:
-                raise Exception(f"Undefined variable {arg_value.id}")
+            # if arg_value.id not in self.variables:
+            #    raise Exception(f"Undefined variable {arg_value.id}")
             expr = f"$.register.{arg_value.id}"
             return JsonPath.string_at(expr) if gen_jsonpath else expr
         elif isinstance(arg_value, ast.Constant):
@@ -425,6 +673,34 @@ class FunctionToSteps:
             return JsonPath.array(*expr) if gen_jsonpath else expr
         else:
             raise Exception(f"Unexpected argument: {arg_value}")
+
+
+class MapScope(SFNScope):
+    def __init__(self, parent_scope: SFNScope):
+        super(MapScope, self).__init__(parent_scope.fts)
+        self.variables = parent_scope.variables.copy()
+        self.scoped_variables = []
+        self._updated_vars = []
+
+    def _added_var(self, var: str):
+        self.scoped_variables.append(var)
+
+    def _updated_var(self, var: str):
+        self._updated_vars.append(var)
+
+    def build_entry_step(self, entry_var: str):
+        return sfn.Pass(
+            self.cdk_stack,
+            self.state_name("Register loop value"),
+            result_path="$.register",
+            parameters=self.build_register_assignment(
+                {entry_var: JsonPath.string_at(f"$.{entry_var}")}, "register."
+            ),
+        )
+
+    @property
+    def updated_vars(self):
+        return [v for v in self._updated_vars if v not in self.scoped_variables]
 
 
 def advance(
@@ -470,16 +746,12 @@ def flatten(items):
 
 def write_definition_json(name, start):
     with open(f"{name}.json", "w") as fp:
+        states = sfn.State.find_reachable_states(start, include_error_handlers=True)
+        states.sort(
+            key=lambda state: int(state.id.split("[")[1].split("]")[0].split(":")[1])
+        )
         json.dump(
-            {
-                "StartAt": start.id,
-                "States": {
-                    s.id: s.to_state_json()
-                    for s in sfn.State.find_reachable_states(
-                        start, include_error_handlers=True
-                    )
-                },
-            },
+            {"StartAt": start.id, "States": {s.id: s.to_state_json() for s in states},},
             fp,
             indent=4,
         )

@@ -9,7 +9,7 @@ from aws_cdk import (
 )
 from constructs import Construct
 from pysfn.lmbda import PythonLambda, function_for_lambda
-from pysfn.steps import state_machine, Retry
+from pysfn.steps import state_machine, Retry, concurrent
 import operations
 
 
@@ -85,6 +85,9 @@ class ProtoAppStack(Stack):
         step7 = high_memory_lambda.register(operations.step7)
         step8 = base_lambda.register(operations.step8)
         step9 = base_lambda.register(operations.step9)
+        step10 = base_lambda.register(operations.step10)
+        step11 = base_lambda.register(operations.step11)
+        step12 = base_lambda.register(operations.step12)
 
         base_lambda.create_construct()
         high_memory_lambda.create_construct()
@@ -185,3 +188,81 @@ class ProtoAppStack(Stack):
             except Exception:
                 message = "Processing failed"
                 return message
+
+        @state_machine(self, "pysfn-larger-variant", locals())
+        def larger_variant(uri1: str, uri2: Union[str, None] = None):
+            successful_uris: List[str] = []
+            failed_uris: List[str] = []
+            successful_count: int = 0
+            failed_count: int = 0
+            if uri2:
+                result_uri, success = step5(uri2, uri1)
+                if success:
+                    successful_uris.append(result_uri)
+                    successful_count += 1
+                else:
+                    failed_uris.append(result_uri)
+                    failed_count += 1
+            job_id = start_job(uri1, uri2)
+            sleep(10)
+            with Retry(
+                ["States.TaskFailed"],
+                interval_seconds=10,
+                backoff_rate=1.2,
+                max_attempts=40,
+            ):
+                result_uri, success = get_result(job_id, uri1, True)
+                if success:
+                    successful_uris.append(result_uri)
+                    successful_count += 1
+                else:
+                    failed_uris.append(result_uri)
+                    failed_count += 1
+            result_uri, success = step6(uri1)
+            try:
+                alt_uri = step7(uri1)
+                result_uri, success = step6(alt_uri)
+                if success:
+                    successful_uris.append(result_uri)
+                    successful_count += 1
+                else:
+                    failed_uris.append(result_uri)
+                    failed_count += 1
+            except Exception:
+                pass
+            try:
+                alt_uri = step7(uri1, True)
+                result_uri, success = step6(alt_uri)
+                if success:
+                    successful_uris.append(result_uri)
+                    successful_count += 1
+                else:
+                    failed_uris.append(result_uri)
+                    failed_count += 1
+            except Exception:
+                pass
+            try:
+                values = step8(successful_uris)
+                (out_uri, value_count, valid, has_detail, score,) = step9(values)
+                return (
+                    out_uri,
+                    value_count,
+                    valid,
+                    has_detail,
+                    score,
+                    values,
+                )
+            except Exception:
+                message = "Processing failed"
+                return message
+
+        @state_machine(self, "pysfn-mapping", locals())
+        def mapping(uri: str):
+            values = step10(uri)
+            results = []
+            for val in concurrent(values, 3):
+                step11(val)
+                res = step12(val)
+                results.append(res)
+            results2 = [step12(v) for v in values]
+            return results  # , results2

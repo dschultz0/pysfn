@@ -21,7 +21,7 @@ def step4(str_value: str):
 
 
 def step5(str_value: str, str_value2: str):
-    return "s3://mybucket/foo/XXXX.json", 60
+    return "s3://mybucket/foo/XXXX.json", True
 
 
 def start_job(str_value: str, str_value2: str):
@@ -29,11 +29,11 @@ def start_job(str_value: str, str_value2: str):
 
 
 def get_result(job_id, uri, raise_incomplete):
-    return "s3://mybucket/foo/XXXX.json", 60
+    return "s3://mybucket/foo/XXXX.json", True
 
 
 def step6(str_value: str):
-    return "s3://mybucket/foo/XXXX.json", 60
+    return "s3://mybucket/foo/XXXX.json", True
 
 
 def step7(str_value: str):
@@ -46,3 +46,15 @@ def step8(values: List):
 
 def step9(values: List):
     return "s3://mybucket/foo/XXXX.json", 60, True, False, 0.8
+
+
+def step10(uri: str):
+    return ["one", "two", "three", "four", "five"]
+
+
+def step11(val: str):
+    return
+
+
+def step12(val: str):
+    return val.upper()
