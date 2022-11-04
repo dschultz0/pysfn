@@ -60,5 +60,6 @@ def if_value(name, var_type=None):
                     sfn.Condition.is_numeric(param),
                     sfn.Condition.not_(sfn.Condition.number_equals(param, 0)),
                 ),
+                sfn.Condition.is_present(f"{param}[0]"),
             ),
         )
