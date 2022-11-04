@@ -281,18 +281,58 @@ class SFNScope:
                 return Retry(**params)
         raise Exception(f"Unhandled with operation: {call}")
 
+    @staticmethod
+    def map_arg(arg):
+        if isinstance(arg, ast.Name):
+            return f"$.register.{arg.id}"
+        elif isinstance(arg, ast.Constant):
+            return arg.value
+        else:
+            raise Exception("Args must be Name or Constant")
+
     def handle_for(self, stmt: ast.For):
         # TODO: Support enumerate...
+        iter = stmt.iter
+        max_concurrency = 0
+        iterator_step = None
         if (
-            isinstance(stmt.iter, ast.Call)
-            and isinstance(stmt.iter.func, ast.Name)
-            and stmt.iter.func.id == "concurrent"
+            isinstance(iter, ast.Call)
+            and isinstance(iter.func, ast.Name)
+            and iter.func.id == "concurrent"
         ):
             max_concurrency = stmt.iter.args[1].value
-            iter_var = stmt.iter.args[0].id
-        elif isinstance(stmt.iter, ast.Name):
-            max_concurrency = 0
-            iter_var = stmt.iter.id
+            iter = iter.args[0]
+        if (
+            isinstance(iter, ast.Call)
+            and isinstance(iter.func, ast.Name)
+            and iter.func.id == "range"
+        ):
+            start_val = 0
+            end_val = 0
+            step_val = 1
+            args = [self.map_arg(arg) for arg in iter.args]
+            print(args)
+            if len(args) == 1:
+                end_val = args[0]
+            elif len(args) >= 2:
+                start_val = args[0]
+                end_val = args[1]
+            if len(args) == 3:
+                step_val = args[2]
+
+            iterator_step = sfn.Pass(
+                self.cdk_stack,
+                self.state_name(f"Build range"),
+                parameters={
+                    "register.$": "$.register",
+                    "mapRange.$": f"States.ArrayRange({start_val}, States.MathAdd({end_val}, -1), {step_val})",
+                },
+            )
+            iter_var = "range"
+            items_path = "$.mapRange"
+        elif isinstance(iter, ast.Name):
+            iter_var = iter.id
+            items_path = f"$.register.{iter_var}"
         else:
             raise Exception("Unsupported for-loop iterator, variables only")
         if not isinstance(stmt.target, ast.Name):
@@ -303,18 +343,18 @@ class SFNScope:
             self.cdk_stack,
             self.state_name(f"For {iter_var}"),
             max_concurrency=max_concurrency,
-            items_path=f"$.register.{iter_var}",
+            items_path=items_path,
             parameters={
                 "register.$": f"$.register",
                 f"{stmt.target.id}.$": "$$.Map.Item.Value",
             },
-            result_path="$.loopResult",
+            result_path="$.register.loopResult",
         )
         choice = sfn.Choice(self.cdk_stack, choice_name)
         choice.when(
             sfn.Condition.and_(
-                sfn.Condition.is_present(f"$.register.{iter_var}"),
-                sfn.Condition.is_present(f"$.register.{iter_var}[0]"),
+                sfn.Condition.is_present(items_path),
+                sfn.Condition.is_present(f"{items_path}[0]"),
             ),
             map_state,
         )
@@ -328,7 +368,7 @@ class SFNScope:
         next_ = map_state.next
         if map_scope.updated_vars:
             params = {
-                v: JsonPath.string_at(f"$.loopResult[*].register.{v}[*]")
+                v: JsonPath.string_at(f"$.register.loopResult[*].register.{v}[*]")
                 for v in map_scope.updated_vars
             }
             consolidate_step = sfn.Pass(
@@ -336,13 +376,17 @@ class SFNScope:
                 self.state_name(f"Consolidate map results"),
                 result_path="$.register",
                 parameters=self.build_register_assignment(
-                    params, "loopResult[0].register."
+                    params, "register.loopResult[0].register."
                 ),
             )
             map_state.next(consolidate_step)
             next_ = consolidate_step.next
 
-        return [choice, map_state], [choice.otherwise, next_]
+        if iterator_step:
+            iterator_step.next(choice)
+            return [iterator_step, choice, map_state], [choice.otherwise, next_]
+        else:
+            return [choice, map_state], [choice.otherwise, next_]
 
     def handle_list_comp(self, stmt: Union[ast.Assign, ast.AnnAssign]):
         target = stmt.targets[0] if isinstance(stmt, ast.Assign) else stmt.target
