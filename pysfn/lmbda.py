@@ -7,8 +7,8 @@ from aws_cdk import (
     Duration,
     Stack,
 )
+import shortuuid
 from aws_cdk.aws_stepfunctions import JsonPath
-from util import shortid
 
 
 @dataclass
@@ -178,3 +178,7 @@ def resolve_layer(layer, stack):
         )
     else:
         return layer
+
+
+def shortid():
+    return shortuuid.uuid()[:8]
