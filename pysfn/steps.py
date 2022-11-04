@@ -214,7 +214,7 @@ class SFNScope:
 
         # Treat unhandled statements as a no-op
         print(f"Unhandled {repr(stmt)}")
-        # print(ast.dump(stmt, indent=2))
+        print(ast.dump(stmt, indent=2))
         return [], None
 
     def handle_with(self, stmt: ast.With):
@@ -523,9 +523,17 @@ class SFNScope:
     def handle_assign_value(
         self, stmt: Union[ast.AnnAssign, ast.Assign]
     ) -> (List[sfn.IChainable], Callable):
+        sub_target = None
         if isinstance(stmt, ast.AnnAssign):
             if isinstance(stmt.target, ast.Name):
                 var_name = stmt.target.id
+            elif (
+                isinstance(stmt.target, ast.Subscript)
+                and isinstance(stmt.target.value, ast.Name)
+                and isinstance(stmt.target.slice, ast.Constant)
+            ):
+                var_name = stmt.target.value.id
+                sub_target = stmt.target.slice.value
             else:
                 raise Exception(
                     f"Unexpected assignment target of type {type(stmt.target)}"
@@ -533,21 +541,45 @@ class SFNScope:
         else:
             if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
                 var_name = stmt.targets[0].id
+            elif (
+                isinstance(stmt.targets[0], ast.Subscript)
+                and isinstance(stmt.targets[0].value, ast.Name)
+                and isinstance(stmt.targets[0].slice, ast.Constant)
+            ):
+                var_name = stmt.targets[0].value.id
+                sub_target = stmt.targets[0].slice.value
             else:
                 raise Exception("Unexpected assignment")
-        value = self.generate_value_repr(stmt.value)
-        # if isinstance(stmt.value, ast.Constant):
-        #    value = stmt.value.value
-        # else:
-        #    raise Exception(f"Unexpected assignment value of type {type(stmt.value)}")
-        assign = sfn.Pass(
-            self.cdk_stack,
-            self.state_name(f"Assign {var_name}"),
-            input_path="$.register",
-            result_path="$.register",
-            parameters=self.build_register_assignment({var_name: value}),
-        )
-        return [assign], assign.next
+        if sub_target:
+            prep = sfn.Pass(
+                self.cdk_stack,
+                self.state_name(f"Prep assign {var_name}.{sub_target}"),
+                input_path="$.register",
+                result_path="$.register.itm",
+                parameters={sub_target: self.generate_value_repr(stmt.value)},
+            )
+            assign = sfn.Pass(
+                self.cdk_stack,
+                self.state_name(f"Assign {var_name}.{sub_target}"),
+                input_path="$.register",
+                result_path="$.register",
+                parameters=self.build_register_assignment(
+                    # {f"{var_name}": JsonPath.json_merge(f"$.{var_name}", "$.itm")}
+                    {f"{var_name}": f"States.JsonMerge($.{var_name}, $.itm, false)"}
+                ),
+            )
+            prep.next(assign)
+            return [prep, assign], assign.next
+        else:
+            value = self.generate_value_repr(stmt.value)
+            assign = sfn.Pass(
+                self.cdk_stack,
+                self.state_name(f"Assign {var_name}"),
+                input_path="$.register",
+                result_path="$.register",
+                parameters=self.build_register_assignment({var_name: value}),
+            )
+            return [assign], assign.next
 
     def handle_if(self, stmt: ast.If) -> (List[sfn.IChainable], Callable):
         condition, name = build_condition(stmt.test)
@@ -595,6 +627,7 @@ class SFNScope:
                 self.state_name(f"Call {call.func.id}"),
                 lambda_function=func.get_lambda(),
                 payload=sfn.TaskInput.from_object(params),
+                input_path="$.register",
                 result_path="$.register.out",
             )
         else:
@@ -706,13 +739,28 @@ class SFNScope:
         if isinstance(arg_value, ast.Name):
             # if arg_value.id not in self.variables:
             #    raise Exception(f"Undefined variable {arg_value.id}")
-            expr = f"$.register.{arg_value.id}"
+            expr = f"$.{arg_value.id}"
             return JsonPath.string_at(expr) if gen_jsonpath else expr
         elif isinstance(arg_value, ast.Constant):
             return arg_value.value
         elif isinstance(arg_value, ast.List):
             expr = [self.generate_value_repr(val, False) for val in arg_value.elts]
             return JsonPath.array(*expr) if gen_jsonpath else expr
+        elif (
+            isinstance(arg_value, ast.Subscript)
+            and isinstance(arg_value.value, ast.Name)
+            and isinstance(arg_value.slice, ast.Constant)
+        ):
+            expr = f"$.{arg_value.value.id}.{arg_value.slice.value}"
+            return JsonPath.string_at(expr) if gen_jsonpath else expr
+        elif isinstance(arg_value, ast.Dict):
+            obj = {}
+            for k, v in zip(arg_value.keys, arg_value.values):
+                if not isinstance(k, ast.Constant):
+                    raise Exception("Dict keys must be a constant")
+                else:
+                    obj[k.value] = self.generate_value_repr(v, gen_jsonpath)
+            return obj
         else:
             raise Exception(f"Unexpected argument: {arg_value}")
 
