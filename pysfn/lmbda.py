@@ -102,6 +102,7 @@ class PythonLambda:
         if definition.name in self.functions:
             raise Exception(f"Multiple functions with the same name: {definition.name}")
         self.functions[definition.name] = definition
+        # TODO: Throw an error if the create_construct() method hasn't been called before calling this
         func.get_lambda = lambda: self.lmbda
         func.get_additional_params = lambda: {"launcher_target": definition.name}
         func.definition = definition
@@ -124,11 +125,10 @@ class PythonLambda:
                 "    kwargs = {a: event[a] for a in definition['args'] if a in event}",
                 "    print(kwargs)",
                 "    result = definition['function'](**kwargs)",
-                "    if not isinstance(result, Mapping):",
-                "        if isinstance(result, tuple):",
-                "            result = {f'arg{i}': r for i, r in enumerate(result)}",
-                "        else:",
-                "            result = {'arg0': result}",
+                "    if isinstance(result, tuple):",
+                "        result = {f'arg{i}': r for i, r in enumerate(result)}",
+                "    else:",
+                "        result = {'arg0': result}",
                 "    print(result)",
                 "    return result",
                 "",
