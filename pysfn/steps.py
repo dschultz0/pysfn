@@ -203,10 +203,7 @@ class SFNScope:
         elif isinstance(stmt, ast.AugAssign) and (
             isinstance(stmt.op, ast.Add) or isinstance(stmt.op, ast.Sub)
         ):
-            # MathAdd isn't currently supported within the CDK
-            # https://github.com/aws/aws-cdk/issues/22629
-            # return self.handle_math_add(stmt)
-            pass
+            return self.handle_math_add(stmt)
         elif isinstance(stmt, ast.Pass):
             if self.fts.skip_pass:
                 return [], None
