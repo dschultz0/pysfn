@@ -149,6 +149,7 @@ class SFNScope:
                 # TODO: Assign the type of the value
                 self.variables[key] = typing.Any
                 self._added_var(key)
+        params = {update_param_name(k, v): v for k, v in params.items()}
         return params
 
     def _added_var(self, var: str):
@@ -752,3 +753,10 @@ def write_definition_json(name, start):
             fp,
             indent=4,
         )
+
+
+def update_param_name(key, value):
+    if isinstance(value, str) and value.startswith("States"):
+        return f"{key}.$"
+    else:
+        return key
