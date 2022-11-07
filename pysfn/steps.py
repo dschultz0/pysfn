@@ -2,6 +2,7 @@ import inspect
 import ast
 import json
 import typing
+from .util import get_function_ast
 from dataclasses import dataclass
 from types import BuiltinFunctionType
 from typing import Dict, List, Callable, Mapping, Any, Union, Iterable
@@ -72,13 +73,7 @@ class FunctionToSteps:
         self.skip_pass = skip_pass
         SFN_INDEX += 1
 
-        # Retrieve the source code for the function with any indent removed
-        src_code = inspect.getsource(func).split("\n")
-        indent = len(src_code[0]) - len(src_code[0].lstrip())
-        src_code = [c[indent:] for c in src_code]
-
-        # Build the AST
-        self.ast = ast.parse("\n".join(src_code))
+        self.ast = get_function_ast(func)
         with open(f"{func.__name__}_ast.txt", "w") as fp:
             fp.write(ast.dump(self.ast, indent=2))
 
