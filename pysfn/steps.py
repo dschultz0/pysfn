@@ -5,7 +5,7 @@ import typing
 from .util import get_function_ast
 from dataclasses import dataclass
 from types import BuiltinFunctionType
-from typing import Dict, List, Callable, Mapping, Any, Union, Iterable
+from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional
 
 from aws_cdk import (
     aws_stepfunctions as sfn,
@@ -35,7 +35,7 @@ class CatchHandler:
     result_path: str = "$.error-info"
 
 
-def concurrent(iterable, max_concurrency: int = None):
+def concurrent(iterable, max_concurrency: Optional[int] = None):
     pass
 
 
@@ -285,55 +285,51 @@ class SFNScope:
         else:
             raise Exception("Args must be Name or Constant")
 
-    def handle_for(self, stmt: ast.For):
-        # TODO: Support enumerate...
-        iter = stmt.iter
-        max_concurrency = 0
+    def _get_iterator(self, iterator: ast.expr) -> (str, str, sfn.State, int):
+        # TODO: Support enumerate
+        # TODO: Support callable iterator
+        max_concurrency = 1
         iterator_step = None
-        if (
-            isinstance(iter, ast.Call)
-            and isinstance(iter.func, ast.Name)
-            and iter.func.id == "concurrent"
-        ):
-            max_concurrency = stmt.iter.args[1].value
-            iter = iter.args[0]
-        if (
-            isinstance(iter, ast.Call)
-            and isinstance(iter.func, ast.Name)
-            and iter.func.id == "range"
-        ):
-            start_val = 0
-            end_val = 0
-            step_val = 1
-            args = [self.map_arg(arg) for arg in iter.args]
-            print(args)
-            if len(args) == 1:
-                end_val = args[0]
-            elif len(args) >= 2:
-                start_val = args[0]
-                end_val = args[1]
-            if len(args) == 3:
-                step_val = args[2]
 
-            iterator_step = sfn.Pass(
-                self.cdk_stack,
-                self.state_name(f"Build range"),
-                parameters={
-                    "register.$": "$.register",
-                    "mapRange.$": f"States.ArrayRange({start_val}, States.MathAdd({end_val}, -1), {step_val})",
-                },
-            )
-            iter_var = "range"
-            items_path = "$.mapRange"
-        elif isinstance(iter, ast.Name):
-            iter_var = iter.id
+        # if the iterator is wrapped in a 'concurrent' function, capture the parameter as the concurrency for the map
+        if (
+            isinstance(iterator, ast.Call)
+            and isinstance(iterator.func, ast.Name)
+            and iterator.func.id == "concurrent"
+        ):
+            if len(iterator.args) > 1:
+                max_concurrency = iterator.args[1].value
+            else:
+                max_concurrency = 0
+            iterator = iterator.args[0]
+
+        # If the iterator is a range function, capture the parameters and create a pass step to build the value array
+        if isinstance(iterator, ast.Call) and isinstance(iterator.func, ast.Name):
+            (
+                iterator_step,
+                return_vars,
+                func_name,
+                result_prefix,
+            ) = self._build_func_call(iterator, "$.iter")
+            iter_var = iterator.func.id
+            items_path = f"$.iter{result_prefix}.{next(return_vars)}"
+
+        # If the iterator is a name, use that value
+        elif isinstance(iterator, ast.Name):
+            iter_var = iterator.id
             items_path = f"$.register.{iter_var}"
         else:
             raise Exception("Unsupported for-loop iterator, variables only")
+        return iter_var, items_path, iterator_step, max_concurrency
+
+    def handle_for(self, stmt: ast.For):
+        iter_var, items_path, iterator_step, max_concurrency = self._get_iterator(
+            stmt.iter
+        )
         if not isinstance(stmt.target, ast.Name):
             raise Exception("Unsupported for-loop target, variables only")
 
-        choice_name = self.state_name(f"Has {iter_var} to map")
+        # choice_name = self.state_name(f"Has {iter_var} to map")
         map_state = sfn.Map(
             self.cdk_stack,
             self.state_name(f"For {iter_var}"),
@@ -345,6 +341,7 @@ class SFNScope:
             },
             result_path="$.register.loopResult",
         )
+        """
         choice = sfn.Choice(self.cdk_stack, choice_name)
         choice.when(
             sfn.Condition.and_(
@@ -353,17 +350,29 @@ class SFNScope:
             ),
             map_state,
         )
+        """
 
+        # Create a scope for the for loop contents and build the contained steps
+        # Also build an entry step to capture the iterator target
         map_scope = MapScope(self)
         entry_step = map_scope.build_entry_step(stmt.target.id)
-        chain, next_ = map_scope.handle_body(stmt.body)
+        chain, map_next_ = map_scope.handle_body(stmt.body)
         entry_step.next(chain[0])
-
         map_state.iterator(entry_step)
         next_ = map_state.next
+
+        # if any vars from the outer scope were updated, add a 'return' step to the map operations and
+        # logic to pull those results into the register after the map completes
+        map_return_step_name = self.state_name("Map return")
         if map_scope.updated_vars:
-            params = {
-                v: JsonPath.string_at(f"$.register.loopResult[*].register.{v}[*]")
+            return_params = {
+                v: JsonPath.string_at(f"$.register.{v}") for v in map_scope.updated_vars
+            }
+            map_return_step = sfn.Pass(
+                self.cdk_stack, map_return_step_name, parameters=return_params
+            )
+            consolidate_params = {
+                v: JsonPath.string_at(f"$.register.loopResult[*].{v}[*]")
                 for v in map_scope.updated_vars
             }
             consolidate_step = sfn.Pass(
@@ -371,17 +380,21 @@ class SFNScope:
                 self.state_name(f"Consolidate map results"),
                 result_path="$.register",
                 parameters=self.build_register_assignment(
-                    params, "register.loopResult[0].register."
+                    consolidate_params, "register."
                 ),
             )
             map_state.next(consolidate_step)
             next_ = consolidate_step.next
-
-        if iterator_step:
-            iterator_step.next(choice)
-            return [iterator_step, choice, map_state], [choice.otherwise, next_]
         else:
-            return [choice, map_state], [choice.otherwise, next_]
+            map_return_step = sfn.Pass(self.cdk_stack, map_return_step_name)
+        advance(map_next_, [map_return_step], map_return_step.next)
+
+        # finalize the steps
+        if iterator_step:
+            iterator_step.next(map_state)
+            return [iterator_step, map_state], next_
+        else:
+            return [map_state], next_
 
     def handle_list_comp(self, stmt: Union[ast.Assign, ast.AnnAssign]):
         target = stmt.targets[0] if isinstance(stmt, ast.Assign) else stmt.target
@@ -594,39 +607,81 @@ class SFNScope:
             chain.extend(else_c)
         return chain, [if_n, else_n]
 
+    def _build_func_call(
+        self, call: ast.Call, result_path: str = "$.register.out"
+    ) -> (sfn.State, Iterable[str], str):
+        if isinstance(call.func, ast.Name):
+            # Get the function
+            func = self.fts.local_values.get(call.func.id)
+            result_prefix = ""
+
+            # Build the parameters
+            if func:
+                params = self.build_parameters(call, func)
+                if hasattr(func, "get_additional_params"):
+                    params.update(func.get_additional_params())
+            elif call.func.id in ["time.sleep", "sleep", "range"]:
+                params = {}
+            else:
+                raise Exception(f"Unable to find function {call.func.id}")
+
+            if call.func.id in ["time.sleep", "sleep"]:
+                invoke = sfn.Wait(
+                    self.cdk_stack,
+                    self.state_name("Wait"),
+                    time=sfn.WaitTime.duration(Duration.seconds(call.args[0].value)),
+                )
+                return_vars = iter([])
+            elif call.func.id == "range":
+                start_val = 0
+                end_val = 0
+                step_val = 1
+                args = [self.map_arg(arg) for arg in call.args]
+                if len(args) == 1:
+                    end_val = args[0]
+                elif len(args) >= 2:
+                    start_val = args[0]
+                    end_val = args[1]
+                if len(args) == 3:
+                    step_val = args[2]
+                invoke = sfn.Pass(
+                    self.cdk_stack,
+                    self.state_name(f"Build range"),
+                    parameters={
+                        "range": JsonPath.string_at(
+                            f"States.ArrayRange({start_val}, States.MathAdd({end_val}, -1), {step_val})"
+                        )
+                    },
+                    result_path=result_path,
+                )
+                return_vars = iter(["range"])
+            elif hasattr(func, "definition"):
+                invoke = tasks.LambdaInvoke(
+                    self.cdk_stack,
+                    self.state_name(f"Call {call.func.id}"),
+                    lambda_function=func.get_lambda(),
+                    payload=sfn.TaskInput.from_object(params),
+                    input_path="$.register",
+                    result_path=result_path,
+                )
+                return_vars = func.definition.get_return_vars()
+                result_prefix = ".Payload"
+            else:
+                raise Exception(
+                    f"Function without an associated Lambda: {call.func.id}"
+                )
+            return invoke, return_vars, call.func.id, result_prefix
+        else:
+            raise Exception(
+                f"Function attribute is not of type name: {type(call.func)}"
+            )
+
     def handle_call_function(
         self, call: ast.Call, assign: Union[ast.Assign, ast.AnnAssign] = None,
     ) -> (List[sfn.IChainable], Callable):
-        # Get the function
-        func = self.fts.local_values.get(call.func.id)
-
-        # Build the parameters
-        if func:
-            params = self.build_parameters(call, func)
-            if hasattr(func, "get_additional_params"):
-                params.update(func.get_additional_params())
-        elif call.func.id in ["time.sleep", "sleep"]:
-            params = {}
-        else:
-            raise Exception(f"Unable to find function {call.func.id}")
-
-        if call.func.id in ["time.sleep", "sleep"]:
-            invoke = sfn.Wait(
-                self.cdk_stack,
-                self.state_name("Wait"),
-                time=sfn.WaitTime.duration(Duration.seconds(call.args[0].value)),
-            )
-        elif hasattr(func, "definition"):
-            invoke = tasks.LambdaInvoke(
-                self.cdk_stack,
-                self.state_name(f"Call {call.func.id}"),
-                lambda_function=func.get_lambda(),
-                payload=sfn.TaskInput.from_object(params),
-                input_path="$.register",
-                result_path="$.register.out",
-            )
-        else:
-            raise Exception(f"Function without an associated Lambda: {call.func.id}")
+        invoke, return_vars, name, result_prefix = self._build_func_call(
+            call, "$.register.out"
+        )
         chain = [invoke]
         next_ = invoke.next
 
@@ -636,22 +691,28 @@ class SFNScope:
                 assign.targets[0] if isinstance(assign, ast.Assign) else assign.target
             )
             if isinstance(target, ast.Name):
-                result_vars = [target.id]
+                result_targets = [target.id]
             elif isinstance(target, ast.Tuple):
-                result_vars = [n.id for n in target.elts]
+                result_targets = [n.id for n in target.elts]
             else:
                 raise Exception(
                     f"Unexpected result target of type {type(assign.target)}"
                 )
-            # print(result_vars)
+            result_params = {
+                v: JsonPath.string_at(f"$.out{result_prefix}.{r}")
+                for v, r in zip(result_targets, return_vars)
+            }
+            print(result_params)
+            if len(result_params) < len(result_targets):
+                raise Exception(
+                    f"Unable to map all response targets to return values for {name}"
+                )
             register = sfn.Pass(
                 self.cdk_stack,
                 self.state_name(f"Register {call.func.id}"),
                 input_path="$.register",
                 result_path="$.register",
-                parameters=self.build_register_assignment(
-                    func.definition.get_result_mapping(result_vars)
-                ),
+                parameters=self.build_register_assignment(result_params),
             )
             invoke.next(register)
             chain.append(register)
