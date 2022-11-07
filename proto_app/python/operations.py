@@ -48,8 +48,10 @@ def step9(values: List):
     return "s3://mybucket/foo/XXXX.json", 60, True, False, 0.8
 
 
-def step10(uri: str):
-    return ["one", "two", "three", "four", "five"]
+def step10(uri: str, count: int):
+    return ["one", "two", "three", "four", "five", "six", "seven", "eight", "nine"][
+        :count
+    ]
 
 
 def step11(val: str):

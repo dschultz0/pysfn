@@ -10,7 +10,7 @@ from aws_cdk import (
 from constructs import Construct
 from pysfn.lmbda import PythonLambda, function_for_lambda
 from pysfn.steps import state_machine, Retry, concurrent
-import operations
+from . import operations
 
 
 class ProtoAppStack(Stack):
@@ -257,12 +257,21 @@ class ProtoAppStack(Stack):
                 return message
 
         @state_machine(self, "pysfn-mapping", locals())
-        def mapping(uri: str):
-            values = step10(uri)
+        def mapping(uri: str, count: int = 5):
+            values = step10(uri, count)
+            r = range(10)
             results = []
+            results2 = []
+            r_vals = []
             for val in concurrent(values, 3):
                 step11(val)
                 res = step12(val)
                 results.append(res)
-            results2 = [step12(v) for v in values]
-            return results  # , results2
+            for val in concurrent(step10(uri, count), 3):
+                step11(val)
+                res = step12(val)
+                results2.append(res)
+            for val in range(5):
+                r_vals.append(val)
+            # results2 = [step12(v) for v in values]
+            return results, results2, r_vals
