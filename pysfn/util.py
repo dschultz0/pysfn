@@ -28,10 +28,12 @@ def find_return(node: ast.expr):
 def get_function_return_vars(func: Callable):
     tree = get_function_ast(func)
     ret = find_return(tree)
-    if isinstance(ret.value, ast.Name):
+    if ret and isinstance(ret.value, ast.Name):
         return [ret.value.id]
-    elif isinstance(ret.value, ast.Tuple) and all(
-        [isinstance(e, ast.Name) for e in ret.value.elts]
+    elif (
+        ret
+        and isinstance(ret.value, ast.Tuple)
+        and all([isinstance(e, ast.Name) for e in ret.value.elts])
     ):
         return [e.id for e in ret.value.elts]
     else:

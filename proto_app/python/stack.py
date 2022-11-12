@@ -273,5 +273,7 @@ class ProtoAppStack(Stack):
                 results2.append(res)
             for val in range(5):
                 r_vals.append(val)
+            for val in range(3):
+                step11(val)
             # results2 = [step12(v) for v in values]
             return results, results2, r_vals

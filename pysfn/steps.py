@@ -40,7 +40,12 @@ def concurrent(iterable, max_concurrency: Optional[int] = None):
 
 
 def state_machine(
-    cdk_stack: Stack, sfn_name: str, local_values, express=False, skip_pass=True
+    cdk_stack: Stack,
+    sfn_name: str,
+    local_values,
+    express=False,
+    skip_pass=True,
+    return_vars: Iterable[str] = [],
 ):
     """
     Function decorator to trigger creation of an AWS Step Functions state machine construct
@@ -49,7 +54,7 @@ def state_machine(
 
     def decorator(func):
         fts = FunctionToSteps(cdk_stack, func, local_values, skip_pass=skip_pass)
-        return sfn.StateMachine(
+        func.state_machine = sfn.StateMachine(
             cdk_stack,
             sfn_name,
             state_machine_name=sfn_name,
@@ -58,6 +63,8 @@ def state_machine(
             else sfn.StateMachineType.STANDARD,
             definition=fts.build_sfn_definition(),
         )
+        func.return_vars = return_vars
+        return func
 
     return decorator
 
@@ -282,6 +289,12 @@ class SFNScope:
             return f"$.register.{arg.id}"
         elif isinstance(arg, ast.Constant):
             return arg.value
+        elif (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.value, ast.Name)
+            and isinstance(arg.slice, ast.Constant)
+        ):
+            return f"$.register.{arg.value.id}[{arg.slice.value}]"
         else:
             raise Exception("Args must be Name or Constant")
 
@@ -329,7 +342,6 @@ class SFNScope:
         if not isinstance(stmt.target, ast.Name):
             raise Exception("Unsupported for-loop target, variables only")
 
-        # choice_name = self.state_name(f"Has {iter_var} to map")
         map_state = sfn.Map(
             self.cdk_stack,
             self.state_name(f"For {iter_var}"),
@@ -341,16 +353,6 @@ class SFNScope:
             },
             result_path="$.register.loopResult",
         )
-        """
-        choice = sfn.Choice(self.cdk_stack, choice_name)
-        choice.when(
-            sfn.Condition.and_(
-                sfn.Condition.is_present(items_path),
-                sfn.Condition.is_present(f"{items_path}[0]"),
-            ),
-            map_state,
-        )
-        """
 
         # Create a scope for the for loop contents and build the contained steps
         # Also build an entry step to capture the iterator target
@@ -386,7 +388,9 @@ class SFNScope:
             map_state.next(consolidate_step)
             next_ = consolidate_step.next
         else:
-            map_return_step = sfn.Pass(self.cdk_stack, map_return_step_name)
+            map_return_step = sfn.Pass(
+                self.cdk_stack, map_return_step_name, parameters={}
+            )
         advance(map_next_, [map_return_step], map_return_step.next)
 
         # finalize the steps
@@ -613,6 +617,9 @@ class SFNScope:
         if isinstance(call.func, ast.Name):
             # Get the function
             func = self.fts.local_values.get(call.func.id)
+            if hasattr(func, "state_machine"):
+                print(func)
+                print(func.__dir__())
             result_prefix = ""
 
             # Build the parameters
@@ -666,6 +673,15 @@ class SFNScope:
                 )
                 return_vars = func.definition.get_return_vars()
                 result_prefix = ".Payload"
+            elif hasattr(func, "state_machine"):
+                invoke = tasks.StepFunctionsStartExecution(
+                    self.cdk_stack,
+                    self.state_name(f"Call {func.state_machine.state_machine_name}"),
+                    state_machine=func.state_machine,
+                    integration_pattern=sfn.IntegrationPattern.REQUEST_RESPONSE,
+                )
+                return_vars = func.return_vars
+                result_prefix = ".Payload"
             else:
                 raise Exception(
                     f"Function without an associated Lambda: {call.func.id}"
@@ -702,7 +718,6 @@ class SFNScope:
                 v: JsonPath.string_at(f"$.out{result_prefix}.{r}")
                 for v, r in zip(result_targets, return_vars)
             }
-            print(result_params)
             if len(result_params) < len(result_targets):
                 raise Exception(
                     f"Unable to map all response targets to return values for {name}"
@@ -744,6 +759,8 @@ class SFNScope:
                 self.state_name(f"Return"),
                 parameters={"value": stmt.value.value},
             )
+        elif stmt.value is None:
+            return_step = sfn.Pass(self.cdk_stack, self.state_name(f"Return"))
         else:
             raise Exception(f"Unhandled return value type {stmt.value}")
         return [return_step], return_step.next
@@ -807,7 +824,10 @@ class SFNScope:
             and isinstance(arg_value.value, ast.Name)
             and isinstance(arg_value.slice, ast.Constant)
         ):
-            expr = f"$.{arg_value.value.id}.{arg_value.slice.value}"
+            if isinstance(arg_value.slice.value, int):
+                expr = f"$.{arg_value.value.id}[{arg_value.slice.value}]"
+            else:
+                expr = f"$.{arg_value.value.id}.{arg_value.slice.value}"
             return JsonPath.string_at(expr) if gen_jsonpath else expr
         elif isinstance(arg_value, ast.Dict):
             obj = {}
