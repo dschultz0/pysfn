@@ -46,10 +46,6 @@ class ProtoAppStack(Stack):
             runtime=PythonLambda.PYTHON_3_9,
             timeout_minutes=15,
             memory_mb=10,
-            # layers=[
-            #    "arn:aws:lambda:us-east-1:999999999999:layer:Utilities:2",
-            #    "arn:aws:lambda:us-east-1:999999999999:layer:Additional:1",
-            # ],
             environment={"NLTK_DATA": "/opt/nltk"},
         )
 
