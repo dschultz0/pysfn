@@ -2,7 +2,7 @@ import inspect
 import ast
 import json
 import typing
-from .util import get_function_ast
+from .function import gather_function_attributes, FunctionAttributes
 from dataclasses import dataclass
 from types import BuiltinFunctionType
 from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional
@@ -45,7 +45,7 @@ def state_machine(
     local_values,
     express=False,
     skip_pass=True,
-    return_vars: Iterable[str] = [],
+    return_vars: Optional[Union[List[str], Mapping[str, typing.Type]]] = None,
 ):
     """
     Function decorator to trigger creation of an AWS Step Functions state machine construct
@@ -53,7 +53,8 @@ def state_machine(
     """
 
     def decorator(func):
-        fts = FunctionToSteps(cdk_stack, func, local_values, skip_pass=skip_pass)
+        func_attrs = gather_function_attributes(func, None, return_vars)
+        fts = FunctionToSteps(cdk_stack, func_attrs, local_values, skip_pass=skip_pass)
         func.state_machine = sfn.StateMachine(
             cdk_stack,
             sfn_name,
@@ -63,25 +64,32 @@ def state_machine(
             else sfn.StateMachineType.STANDARD,
             definition=fts.build_sfn_definition(),
         )
-        func.return_vars = return_vars
+        func.output = func_attrs.output
         return func
 
     return decorator
 
 
 class FunctionToSteps:
-    def __init__(self, cdk_stack: Stack, func: Callable, local_values, skip_pass=True):
+    def __init__(
+        self,
+        cdk_stack: Stack,
+        func_attrs: FunctionAttributes,
+        local_values,
+        skip_pass=True,
+    ):
         global SFN_INDEX
         self.cdk_stack = cdk_stack
-        self.func = func
+        self.func = func_attrs.func
+        self.output = func_attrs.output
         self.local_values = local_values
         self.state_number = 0
         self.sfn_number = SFN_INDEX
         self.skip_pass = skip_pass
         SFN_INDEX += 1
 
-        self.ast = get_function_ast(func)
-        with open(f"{func.__name__}_ast.txt", "w") as fp:
+        self.ast = func_attrs.tree
+        with open(f"{func_attrs.name}_ast.txt", "w") as fp:
             fp.write(ast.dump(self.ast, indent=2))
 
         # Get the function root
@@ -120,6 +128,7 @@ class SFNScope:
         self.cdk_stack = fts.cdk_stack
         self.state_name = fts.state_name
         self.variables: Dict[str, typing.Type] = {}
+        self.output = fts.output
 
     def generate_entry_steps(
         self, required_parameters, optional_parameters: Mapping[str, Any] = None
@@ -233,11 +242,11 @@ class SFNScope:
         return chain, n
 
     def handle_try(self, stmt: ast.Try):
-        chain, n = self.handle_body(stmt.body)
+        chain, n = ChildScope(self).handle_body(stmt.body)
         nexts = [n]
         handlers = []
         for handler in stmt.handlers:
-            h_chain, h_n = self.handle_body(handler.body)
+            h_chain, h_n = ChildScope(self).handle_body(handler.body)
             # If the handler body isn't empty, add it in
             if h_chain:
                 chain.extend(h_chain)
@@ -325,7 +334,7 @@ class SFNScope:
                 result_prefix,
             ) = self._build_func_call(iterator, "$.iter")
             iter_var = iterator.func.id
-            items_path = f"$.iter{result_prefix}.{next(return_vars)}"
+            items_path = f"$.iter{result_prefix}.{return_vars[0]}"
 
         # If the iterator is a name, use that value
         elif isinstance(iterator, ast.Name):
@@ -600,8 +609,8 @@ class SFNScope:
         def if_next(step):
             choice.when(condition, step)
 
-        if_c, if_n = self.handle_body(stmt.body)
-        else_c, else_n = self.handle_body(stmt.orelse)
+        if_c, if_n = ChildScope(self).handle_body(stmt.body)
+        else_c, else_n = ChildScope(self).handle_body(stmt.orelse)
         if_n = advance(if_next, if_c, if_n)
         else_n = advance(choice.otherwise, else_c, else_n)
         chain = [choice]
@@ -613,13 +622,10 @@ class SFNScope:
 
     def _build_func_call(
         self, call: ast.Call, result_path: str = "$.register.out"
-    ) -> (sfn.State, Iterable[str], str):
+    ) -> (sfn.State, List[str], str):
         if isinstance(call.func, ast.Name):
             # Get the function
             func = self.fts.local_values.get(call.func.id)
-            if hasattr(func, "state_machine"):
-                print(func)
-                print(func.__dir__())
             result_prefix = ""
 
             # Build the parameters
@@ -638,7 +644,7 @@ class SFNScope:
                     self.state_name("Wait"),
                     time=sfn.WaitTime.duration(Duration.seconds(call.args[0].value)),
                 )
-                return_vars = iter([])
+                return_vars = []
             elif call.func.id == "range":
                 start_val = 0
                 end_val = 0
@@ -661,7 +667,7 @@ class SFNScope:
                     },
                     result_path=result_path,
                 )
-                return_vars = iter(["range"])
+                return_vars = ["range"]
             elif hasattr(func, "definition"):
                 invoke = tasks.LambdaInvoke(
                     self.cdk_stack,
@@ -671,16 +677,17 @@ class SFNScope:
                     input_path="$.register",
                     result_path=result_path,
                 )
-                return_vars = func.definition.get_return_vars()
+                return_vars = list(func.definition.output.keys())
                 result_prefix = ".Payload"
             elif hasattr(func, "state_machine"):
                 invoke = tasks.StepFunctionsStartExecution(
                     self.cdk_stack,
                     self.state_name(f"Call {func.state_machine.state_machine_name}"),
                     state_machine=func.state_machine,
-                    integration_pattern=sfn.IntegrationPattern.REQUEST_RESPONSE,
+                    integration_pattern=sfn.IntegrationPattern.RUN_JOB,
+                    input=sfn.TaskInput.from_object(params),
                 )
-                return_vars = func.return_vars
+                return_vars = list(func.output.keys())
                 result_prefix = ".Payload"
             else:
                 raise Exception(
@@ -735,29 +742,36 @@ class SFNScope:
 
         return chain, next_
 
+    @staticmethod
+    def _return_value(value: Union[ast.expr, ast.stmt]):
+        if isinstance(value, ast.Name):
+            return JsonPath.string_at(f"$.register.{value.id}")
+        elif isinstance(value, ast.Constant):
+            return value.value
+        else:
+            raise Exception(f"Unanticipated return type: {value}")
+
     def handle_return(self, stmt: ast.Return):
         if isinstance(stmt.value, ast.Tuple):
-            param_names = [n.id for n in stmt.value.elts]
+            if len(self.output) != len(stmt.value.elts):
+                raise Exception("Mismatched return value counts")
             return_step = sfn.Pass(
                 self.cdk_stack,
                 self.state_name(f"Return"),
                 parameters={
-                    a: JsonPath.string_at(f"$.register.{a}") for a in param_names
+                    k: self._return_value(v)
+                    for k, v in zip(self.output.keys(), stmt.value.elts)
                 },
             )
-        elif isinstance(stmt.value, ast.Name):
+        elif isinstance(stmt.value, ast.Name) or isinstance(stmt.value, ast.Constant):
+            if len(self.output) != 1:
+                raise Exception("Mismatched return value counts")
             return_step = sfn.Pass(
                 self.cdk_stack,
                 self.state_name(f"Return"),
                 parameters={
-                    stmt.value.id: JsonPath.string_at(f"$.register.{stmt.value.id}")
+                    list(self.output.keys())[0]: self._return_value(stmt.value)
                 },
-            )
-        elif isinstance(stmt.value, ast.Constant):
-            return_step = sfn.Pass(
-                self.cdk_stack,
-                self.state_name(f"Return"),
-                parameters={"value": stmt.value.value},
             )
         elif stmt.value is None:
             return_step = sfn.Pass(self.cdk_stack, self.state_name(f"Return"))
@@ -770,7 +784,7 @@ class SFNScope:
 
         # TODO: Handle kwonly args
         if hasattr(func, "definition"):
-            args = func.definition.args.keys()
+            args = func.definition.input.keys()
         elif isinstance(func, BuiltinFunctionType):
             return None
         else:
@@ -867,6 +881,16 @@ class MapScope(SFNScope):
     @property
     def updated_vars(self):
         return [v for v in self._updated_vars if v not in self.scoped_variables]
+
+
+class ChildScope(SFNScope):
+    def __init__(self, parent_scope: SFNScope):
+        super(ChildScope, self).__init__(parent_scope.fts)
+        self.variables = parent_scope.variables.copy()
+        self.scoped_variables = []
+
+    def _added_var(self, var: str):
+        self.scoped_variables.append(var)
 
 
 def advance(

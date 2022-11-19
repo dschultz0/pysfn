@@ -1,113 +1,43 @@
-import inspect
 import os
-from dataclasses import dataclass, field
-from typing import List, Mapping, Union, Callable, Any, Optional, Iterable
+from dataclasses import dataclass
+from typing import List, Mapping, Union, Callable, Any, Optional, Iterable, Type
 from aws_cdk import (
     aws_lambda as lmbda,
     Duration,
     Stack,
 )
 import shortuuid
-from .util import get_function_return_vars
-from aws_cdk.aws_stepfunctions import JsonPath
+from .function import gather_function_attributes
 
 
 @dataclass
 class LambdaDefinition:
     func: lmbda.Function
-    args: Mapping[str, Any]
-    return_annotation: Mapping[str, Any]
-    return_vars: List[str] = field(init=False)
-
-    def __post_init__(self):
-        self.return_vars = (
-            list(self.return_annotation.keys()) if self.return_annotation else None
-        )
+    input: Mapping[str, Any]
+    output: Mapping[str, Any]
 
     def get_return_vars(self) -> Iterable[str]:
-        if self.return_vars is None:
+        if self.output is None:
             return arg_iter()
         else:
-            return iter(self.return_vars)
+            return iter(self.output.keys())
 
 
 @dataclass
-class LauncherDefinition:
+class LauncherFunction:
     func: Callable
-    name: str = None
-    src_dir: str = None
-    return_vars: Union[None, List[str]] = None
-    args: Mapping[str, Any] = field(init=False)
-    return_annotation: Mapping[str, Any] = field(init=False)
-
-    def __post_init__(self):
-        if self.name is None:
-            # TODO: Need to assign a better default name...
-            self.name = self.func.__name__
-        arg_spec = inspect.getfullargspec(self.func)
-        self.args = {a: arg_spec.annotations.get(a) for a in arg_spec.args}
-
-        # Build the return_annotation values based on three sources if any or all are present
-        ret_annotation = arg_spec.annotations.get("return")
-        ret_annotation = (
-            list(ret_annotation)
-            if isinstance(ret_annotation, tuple)
-            else (None if ret_annotation is None else [ret_annotation])
-        )
-        ret_args = get_function_return_vars(self.func)
-        ret_vars = self.return_vars
-        if ret_vars:
-            self.return_annotation = self._build_return_annotation(
-                ret_vars, ret_annotation
-            )
-        elif ret_args:
-            self.return_annotation = self._build_return_annotation(
-                ret_args, ret_annotation
-            )
-        elif ret_annotation:
-            self.return_vars = [f"arg{i}" for i in range(len(ret_annotation))]
-            self.return_annotation = {
-                k: v for k, v in zip(self.return_vars, ret_annotation)
-            }
-        else:
-            self.return_vars = None
-            self.return_annotation = {}
-
-    def get_return_vars(self) -> Iterable[str]:
-        if self.return_vars is None:
-            return arg_iter()
-        else:
-            return self.return_vars
-
-    def _build_return_annotation(self, var_list, annotated_types):
-        if annotated_types:
-            if len(var_list) == len(annotated_types):
-                return {k: v for k, v in zip(var_list, annotated_types)}
-            else:
-                raise Exception(
-                    f"Mismatch between the number of return values and the return annotation in function {self.name}"
-                )
-        else:
-            return {k: None for k in var_list}
-
-    @property
-    def module(self):
-        # TODO: Explore a better alternative to this approach for ensuring valid import path
-        module_parts = self.func.__module__.split(".")
-        if module_parts[0] == self.src_dir:
-            return ".".join(module_parts[1:])
-        else:
-            return self.func.__module__
-
-    @property
-    def function_name(self):
-        return self.func.__name__
+    launcher_name: str
+    name: str
+    module: str
+    input: Mapping[str, Type]
+    output: Mapping[str, Type]
 
     def to_config(self):
         return (
             "{"
-            + f'"function": {self.module}.{self.function_name}, '
-            + f'"args": {list(self.args.keys())}'
+            + f'"function": {self.module}.{self.name}, '
+            + f'"args": {list(self.input.keys())}, '
+            + f'"return_args": {list(self.output.keys())}'
             + "}"
         )
 
@@ -148,10 +78,21 @@ class PythonLambda:
         self.lmbda = None
 
     def register(
-        self, func: Callable, name: str = None, return_vars: Optional[List[str]] = None
+        self,
+        func: Callable,
+        name: str = None,
+        return_vars: Optional[Union[List[str], Mapping[str, Type]]] = None,
     ):
-        definition = LauncherDefinition(
-            func, name, os.path.split(self.path)[1], return_vars
+        f_attrs = gather_function_attributes(
+            func, None, return_vars, src_dir=os.path.split(self.path)[1]
+        )
+        definition = LauncherFunction(
+            func=func,
+            launcher_name=name,
+            name=f_attrs.name,
+            module=f_attrs.module,
+            input=f_attrs.input,
+            output=f_attrs.output,
         )
         if definition.name in self.functions:
             raise Exception(f"Multiple functions with the same name: {definition.name}")
@@ -179,10 +120,11 @@ class PythonLambda:
                 "    kwargs = {a: event[a] for a in definition['args'] if a in event}",
                 "    print(kwargs)",
                 "    result = definition['function'](**kwargs)",
+                "    return_args = definition.get('return_args', [])",
                 "    if isinstance(result, tuple):",
-                "        result = {f'arg{i}': r for i, r in enumerate(result)}",
-                "    else:",
-                "        result = {'arg0': result}",
+                "        result = {k: v for k, v in zip(return_args, result)}",
+                "    elif return_args:",
+                "        result = {return_args[0]: result}",
                 "    print(result)",
                 "    return result",
                 "",
@@ -228,14 +170,10 @@ def function_for_lambda(
 def resolve_layer(layer, stack):
     if isinstance(layer, str):
         return lmbda.LayerVersion.from_layer_version_arn(
-            stack, f"{layer.split(':')[-2]}{shortid()}", layer,
+            stack, f"{layer.split(':')[-2]}{shortuuid.uuid()[:8]}", layer,
         )
     else:
         return layer
-
-
-def shortid():
-    return shortuuid.uuid()[:8]
 
 
 def arg_iter():
