@@ -177,17 +177,10 @@ class ProtoAppStack(Stack):
             try:
                 values = step8([out_uri1, out_uri2, out_uri3, out_uri4, out_uri5,])
                 (out_uri, value_count, valid, has_detail, score,) = step9(values)
-                return (
-                    out_uri,
-                    value_count,
-                    valid,
-                    has_detail,
-                    score,
-                    values,
-                )
+                return out_uri, value_count, valid, has_detail, score, values, None
             except Exception:
                 message = "Processing failed"
-                return message
+                return None, None, None, None, None, None, message
 
         @state_machine(self, "pysfn-larger-variant", locals())
         def larger_variant(uri1: str, uri2: Union[str, None] = None):
@@ -244,17 +237,10 @@ class ProtoAppStack(Stack):
             try:
                 values = step8(successful_uris)
                 (out_uri, value_count, valid, has_detail, score,) = step9(values)
-                return (
-                    out_uri,
-                    value_count,
-                    valid,
-                    has_detail,
-                    score,
-                    values,
-                )
+                return out_uri, value_count, valid, has_detail, score, values, None
             except Exception:
                 message = "Processing failed"
-                return message
+                return None, None, None, None, None, None, message
 
         @state_machine(self, "pysfn-mapping", locals())
         def mapping(uri: str, count: int = 5):
@@ -277,3 +263,8 @@ class ProtoAppStack(Stack):
                 step11(val)
             # results2 = [step12(v) for v in values]
             return results, results2, r_vals
+
+        @state_machine(self, "pysfn-batch", locals())
+        def batch(uris: List[str]):
+            for uri in uris:
+                larger_variant(uri)

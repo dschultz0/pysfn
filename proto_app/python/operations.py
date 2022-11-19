@@ -1,8 +1,40 @@
 from typing import List
+from dataclasses import make_dataclass, dataclass
+
+
+@dataclass
+class Step1Output:
+    valid: bool
+    str_value: str
+    failed: bool
+    int_value: int
+    response_code: int
+    content_type: str
 
 
 def step1(str_value: str, bool_value: bool) -> (bool, str, bool, int, int, str):
     return str_value in ["html", "image", "pdf"], str_value, False, 4, 200, "text/html"
+
+
+def step1_typed(str_value: str, bool_value: bool) -> Step1Output:
+    return Step1Output(
+        str_value in ["html", "image", "pdf"], str_value, False, 4, 200, "text/html",
+    )
+
+
+def step1_inline_typed(input: make_dataclass("Input", ["str_value", "bool_value"])):
+    Output = make_dataclass(
+        "Output",
+        ["valid", "str_value", "failed", "int_value", "response_code", "content_type"],
+    )
+    return Output(
+        input.str_value in ["html", "image", "pdf"],
+        input.str_value,
+        False,
+        4,
+        200,
+        "text/html",
+    )
 
 
 def step2(str_value: str, list_value: List[int]):
