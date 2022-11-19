@@ -1,4 +1,6 @@
 import os
+import pathlib
+import shutil
 from dataclasses import dataclass
 from typing import List, Mapping, Union, Callable, Any, Optional, Iterable, Type
 from aws_cdk import (
@@ -8,6 +10,9 @@ from aws_cdk import (
 )
 import shortuuid
 from .function import gather_function_attributes
+
+
+OPERATION_KEYWORD = "pysfn_operation"
 
 
 @dataclass
@@ -76,6 +81,9 @@ class PythonLambda:
         self.environment = environment
         self.name = name if name else id_
         self.lmbda = None
+        self.build_path = pathlib.Path(
+            os.getcwd(), "build", id_.lower().replace(" ", "_")
+        )
 
     def register(
         self,
@@ -99,13 +107,13 @@ class PythonLambda:
         self.functions[definition.name] = definition
         # TODO: Throw an error if the create_construct() method hasn't been called before calling this
         func.get_lambda = lambda: self.lmbda
-        func.get_additional_params = lambda: {"launcher_target": definition.name}
+        func.get_additional_params = lambda: {OPERATION_KEYWORD: definition.name}
         func.definition = definition
         return func
 
     def create_construct(self):
-        module_name = f"{self.id_.lower().replace(' ', '_')}_pysfn_launcher"
-        file_path = os.path.join(self.path, module_name + ".py")
+        module_name = "pysfn_launcher"
+        file_path = pathlib.Path(self.build_path, module_name + ".py")
         modules = set()
         launch_code = ["def launch(event, context):", "    launchers = {"]
         for name, definition in self.functions.items():
@@ -116,7 +124,7 @@ class PythonLambda:
             [
                 "    }",
                 "    print(event)",
-                "    definition = launchers[event['launcher_target']]",
+                f"    definition = launchers[event['{OPERATION_KEYWORD}']]",
                 "    kwargs = {a: event[a] for a in definition['args'] if a in event}",
                 "    print(kwargs)",
                 "    result = definition['function'](**kwargs)",
@@ -132,13 +140,18 @@ class PythonLambda:
         )
         import_code = [f"import {m}" for m in modules] + ["from typing import Mapping"]
         code = import_code + ["", ""] + launch_code
+        if self.build_path.exists():
+            shutil.rmtree(self.build_path)
+        self.build_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(self.path, self.build_path)
+
         with open(file_path, "w") as fp:
             fp.write("\n".join(code))
         self.lmbda = lmbda.Function(
             self.stack,
             self.id_,
             function_name=self.name,
-            code=lmbda.Code.from_asset(self.path),
+            code=lmbda.Code.from_asset(str(self.build_path)),
             handler=f"{module_name}.launch",
             runtime=self.runtime,
             role=self.role,

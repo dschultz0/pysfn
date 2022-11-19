@@ -1,4 +1,5 @@
 import inspect
+import pathlib
 import ast
 import json
 import typing
@@ -89,7 +90,7 @@ class FunctionToSteps:
         SFN_INDEX += 1
 
         self.ast = func_attrs.tree
-        with open(f"{func_attrs.name}_ast.txt", "w") as fp:
+        with open(pathlib.Path("build", f"{func_attrs.name}_ast.txt"), "w") as fp:
             fp.write(ast.dump(self.ast, indent=2))
 
         # Get the function root
@@ -935,7 +936,7 @@ def flatten(items):
 
 
 def write_definition_json(name, start):
-    with open(f"{name}.json", "w") as fp:
+    with open(pathlib.Path("build", f"{name}.json"), "w") as fp:
         states = sfn.State.find_reachable_states(start, include_error_handlers=True)
         states.sort(
             key=lambda state: int(state.id.split("[")[1].split("]")[0].split(":")[1])
