@@ -159,10 +159,14 @@ class SFNScope:
         for key in values.keys():
             if key not in self.variables:
                 # TODO: Assign the type of the value
-                self.variables[key] = typing.Any
-                self._added_var(key)
+                self.add_var(key)
+
         params = {update_param_name(k, v): v for k, v in params.items()}
         return params
+
+    def add_var(self, key: str, var_type: Type = Any):
+        self.variables[key] = var_type
+        self._added_var(key)
 
     def _added_var(self, var: str):
         pass
