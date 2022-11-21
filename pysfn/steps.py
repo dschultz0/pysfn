@@ -247,9 +247,24 @@ class SFNScope:
         nexts = [n]
         handlers = []
         for handler in stmt.handlers:
-            h_chain, h_n = ChildScope(self).handle_body(handler.body)
+            child_scope = ChildScope(self)
+            exception_step = None
+            if handler.name:
+                exception_step = sfn.Pass(
+                    self.cdk_stack,
+                    self.state_name(f"Register exception"),
+                    result_path="$.register",
+                    parameters=child_scope.build_register_assignment(
+                        {handler.name: JsonPath.string_at("$.error-info")}, "register."
+                    ),
+                )
+            h_chain, h_n = child_scope.handle_body(handler.body)
+
             # If the handler body isn't empty, add it in
             if h_chain:
+                if exception_step:
+                    exception_step.next(h_chain[0])
+                    h_chain = [exception_step] + h_chain
                 chain.extend(h_chain)
                 nexts.append(h_n)
             handlers.append(self.build_exception_handler(handler, h_chain))
