@@ -6,7 +6,7 @@ import typing
 from .function import gather_function_attributes, FunctionAttributes
 from dataclasses import dataclass
 from types import BuiltinFunctionType
-from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional
+from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional, Type
 
 from aws_cdk import (
     aws_stepfunctions as sfn,
@@ -37,6 +37,18 @@ class CatchHandler:
 
 
 def concurrent(iterable, max_concurrency: Optional[int] = None):
+    pass
+
+
+def event(func: Callable):
+    pass
+
+
+def await_token(
+    func: Callable,
+    return_args: Union[List[str], Mapping[str, Type]],
+    duration: Duration = None,
+):
     pass
 
 
@@ -635,7 +647,12 @@ class SFNScope:
         return chain, [if_n, else_n]
 
     def _build_func_call(
-        self, call: ast.Call, result_path: str = "$.register.out"
+        self,
+        call: ast.Call,
+        result_path: str = "$.register.out",
+        invoke_event_: bool = False,
+        await_token_: bool = False,
+        await_duration_: Duration = None,
     ) -> (sfn.State, List[str], str):
         if isinstance(call.func, ast.Name):
             # Get the function
@@ -647,7 +664,13 @@ class SFNScope:
                 params = self.build_parameters(call, func)
                 if hasattr(func, "get_additional_params"):
                     params.update(func.get_additional_params())
-            elif call.func.id in ["time.sleep", "sleep", "range"]:
+            elif call.func.id in [
+                "time.sleep",
+                "sleep",
+                "range",
+                event.__name__,
+                await_token.__name__,
+            ]:
                 params = {}
             else:
                 raise Exception(f"Unable to find function {call.func.id}")
@@ -682,7 +705,52 @@ class SFNScope:
                     result_path=result_path,
                 )
                 return_vars = ["range"]
+            elif (
+                call.func.id == event.__name__
+                and len(call.args) > 0
+                and isinstance(call.args[0], ast.Call)
+            ):
+                return self._build_func_call(
+                    call.args[0], result_path=result_path, invoke_event_=True
+                )
+            elif (
+                call.func.id == await_token.__name__
+                and len(call.args) >= 2
+                and isinstance(call.args[0], ast.Call)
+            ):
+                duration = None
+                if len(call.args) == 3:
+                    duration_arg = call.args[2]
+                    if isinstance(duration_arg, ast.Call) and isinstance(
+                        duration_arg.func, ast.Attribute
+                    ):
+                        attr_name = duration_arg.func.attr
+                        if len(duration_arg.args) > 0:
+                            duration_arg_value = duration_arg.args[0]
+                            if isinstance(duration_arg_value, ast.Constant):
+                                duration = getattr(Duration, attr_name)(
+                                    duration_arg_value.value
+                                )
+                invoke, return_vars, name, result_prefix = self._build_func_call(
+                    call.args[0],
+                    result_path=result_path,
+                    invoke_event_=True,
+                    await_token_=True,
+                    await_duration_=duration,
+                )
+                return_arg = call.args[1]
+                if isinstance(return_arg, ast.List) and all(
+                    isinstance(a, ast.Constant) for a in return_arg.elts
+                ):
+                    return_vars = [a.value for a in return_arg.elts]
+                return invoke, return_vars, name, ""
             elif hasattr(func, "definition"):
+                invocation_type = tasks.LambdaInvocationType.REQUEST_RESPONSE
+                integration_pattern = sfn.IntegrationPattern.REQUEST_RESPONSE
+                if invoke_event_:
+                    invocation_type = tasks.LambdaInvocationType.EVENT
+                if await_token_:
+                    integration_pattern = sfn.IntegrationPattern.WAIT_FOR_TASK_TOKEN
                 invoke = tasks.LambdaInvoke(
                     self.cdk_stack,
                     self.state_name(f"Call {call.func.id}"),
@@ -690,6 +758,9 @@ class SFNScope:
                     payload=sfn.TaskInput.from_object(params),
                     input_path="$.register",
                     result_path=result_path,
+                    invocation_type=invocation_type,
+                    integration_pattern=integration_pattern,
+                    heartbeat=await_duration_,
                 )
                 return_vars = list(func.definition.output.keys())
                 result_prefix = ".Payload"
@@ -865,6 +936,18 @@ class SFNScope:
                 else:
                     obj[k.value] = self.generate_value_repr(v, gen_jsonpath)
             return obj
+        # TODO: evaluate if this hack for handling JsonPath values is the best approach
+        elif isinstance(arg_value, ast.Attribute) and (
+            (
+                isinstance(arg_value.value, ast.Attribute)
+                and arg_value.value.attr == "JsonPath"
+            )
+            or (
+                isinstance(arg_value.value, ast.Name)
+                and arg_value.value.id == "JsonPath"
+            )
+        ):
+            return getattr(JsonPath, arg_value.attr)
         else:
             raise Exception(f"Unexpected argument: {arg_value}")
 

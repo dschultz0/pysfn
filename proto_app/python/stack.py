@@ -4,12 +4,13 @@ from typing import List, Union
 from aws_cdk import (
     aws_iam as iam,
     aws_lambda as lmbda,
+    aws_stepfunctions as sfn,
     Duration,
     Stack,
 )
 from constructs import Construct
 from pysfn.lmbda import PythonLambda, function_for_lambda
-from pysfn.steps import state_machine, Retry, concurrent
+from pysfn.steps import state_machine, Retry, concurrent, event, await_token
 from . import operations
 
 
@@ -20,11 +21,26 @@ class ProtoAppStack(Stack):
         self.lambda_role = iam.Role(
             self,
             "LambdaRole",
-            role_name="LambdaRole",
+            role_name="pysfn-lambda-role",
             assumed_by=iam.ServicePrincipal("lambda.amazonaws.com"),
             managed_policies=[
                 iam.ManagedPolicy.from_aws_managed_policy_name("AWSLambdaExecute")
             ],
+            inline_policies={
+                "send-sfn-token": iam.PolicyDocument(
+                    statements=[
+                        iam.PolicyStatement(
+                            actions=[
+                                "states:SendTaskSuccess",
+                                "states:SendTaskFailure",
+                                "states:SendTaskHeartbeat",
+                            ],
+                            effect=iam.Effect.ALLOW,
+                            resources=["*"],
+                        ),
+                    ]
+                )
+            },
         )
 
         base_lambda = PythonLambda(
@@ -33,7 +49,7 @@ class ProtoAppStack(Stack):
             os.path.join(os.getcwd(), "python"),
             role=self.lambda_role,
             runtime=PythonLambda.PYTHON_3_9,
-            timeout_minutes=1,
+            timeout_minutes=5,
             memory_mb=1,
             # layers=["arn:aws:lambda:us-east-1:999999999999:layer:Utilities:2"],
             environment=None,
@@ -57,7 +73,7 @@ class ProtoAppStack(Stack):
                 os.path.join(os.getcwd(), "js"), exclude=["node_modules"]
             ),
             handler="app.handler",
-            runtime=lmbda.Runtime.NODEJS_14_X,
+            runtime=lmbda.Runtime.NODEJS_18_X,
             role=self.lambda_role,
             timeout=Duration.minutes(10),
             memory_size=2096,
@@ -84,6 +100,7 @@ class ProtoAppStack(Stack):
         step10 = base_lambda.register(operations.step10)
         step11 = base_lambda.register(operations.step11)
         step12 = base_lambda.register(operations.step12)
+        delayed_step = base_lambda.register(operations.delayed_step)
 
         base_lambda.create_construct()
         high_memory_lambda.create_construct()
@@ -264,3 +281,44 @@ class ProtoAppStack(Stack):
         def batch(uris: List[str]):
             for uri in uris:
                 larger_variant(uri)
+
+        @state_machine(self, "pysfn-callback", locals())
+        def token_callback(str_value: str):
+            # Simply trigger asynchronously
+            event(delayed_step(str_value))
+
+            # Callback will be called after 30 seconds, sfn will wait up to 2 minutes
+            result = await_token(
+                delayed_step(str_value, sfn.JsonPath.task_token, 30),
+                ["result"],
+                Duration.minutes(2),
+            )
+
+            # Heartbeat every 20 seconds, callback after 5, sfn will wait 30 seconds between heartbeats
+            result = await_token(
+                delayed_step(str_value, sfn.JsonPath.task_token, 20, 5),
+                ["result"],
+                Duration.seconds(30),
+            )
+
+            # Callback will be called after 30 seconds, sfn will only wait 20 seconds
+            try:
+                result = await_token(
+                    delayed_step(str_value, sfn.JsonPath.task_token, 30),
+                    ["result"],
+                    Duration.seconds(20),
+                )
+            except Exception as ex:
+                error = ex
+
+            # Callback will be called after 20 seconds with a failure
+            try:
+                result = await_token(
+                    delayed_step(str_value, sfn.JsonPath.task_token, 20, success=False),
+                    ["result"],
+                    Duration.minutes(2),
+                )
+            except Exception as ex:
+                error = ex
+
+            return result

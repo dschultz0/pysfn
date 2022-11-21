@@ -1,5 +1,8 @@
+import json
 from typing import List
+import time
 from dataclasses import make_dataclass, dataclass
+import boto3
 
 
 @dataclass
@@ -92,3 +95,32 @@ def step11(val: str):
 
 def step12(val: str):
     return val.upper()
+
+
+def delayed_step(
+    val: str,
+    task_token: str = None,
+    delay: int = 20,
+    heartbeats: int = None,
+    success: bool = True,
+):
+    sfn = boto3.client("stepfunctions")
+    result = val.lower()
+    if task_token:
+        if heartbeats:
+            for i in range(heartbeats):
+                time.sleep(delay)
+                print("Sending heartbeat")
+                sfn.send_task_heartbeat(taskToken=task_token)
+        time.sleep(delay)
+        if success:
+            print("Sending success")
+            sfn.send_task_success(
+                taskToken=task_token, output=json.dumps({"result": result})
+            )
+        else:
+            print("Sending failure")
+            sfn.send_task_failure(taskToken=task_token, error="Failed")
+    else:
+        time.sleep(delay)
+        return result
