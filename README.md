@@ -3,7 +3,7 @@
 
 This package is an initial experiment in exploring ways to make AWS Step Functions more useful by allowing
 developers to build state machines in the same way they would write a Python function. Users can define
-state machines in their CDK Stack as simple functions, then apply a `@state_machine` to declare
+state machines in their CDK Stack as simple functions, then apply a `@state_machine` decorator to declare
 a Construct in their stack.
 
 This is very much an experiment, and I welcome feedback on the viability and utility of this approach. 
@@ -18,14 +18,13 @@ prototype app, clone the repo give it a shot. Assuming you have the AWS CDK inst
 deploy the app by doing the following:
 
 ```shell
+pip install pysfn
 cd proto_app
 cdk deploy
 ```
 
-Note that you'll likely need to add the `pysfn` and `proto_app/python` directories to your PYTHONPATH so that
-they'll get picked up.
-
-Once you've deployed it, you can submit the step functions that have been created with the following input.
+Once you've deployed it, you can submit the *basic*, *simple*, and *larger* step functions that have been 
+created with the following input.
 
 ```json
 {
@@ -551,7 +550,7 @@ step1 = base_lambda.register(operations.step1)
 
 The new `step1` variable has the same function signature as the original function, but can now be used
 within our state machine function. The transpiler uses the details of this lambda to produce the following
-state in our state machine. Note the `launcher_target` value that is included in the Payload.
+state in our state machine. Note the `pysfn_operation` value that is included in the Payload.
 
 ```json
     "Call step1 [1:8]": {
@@ -564,7 +563,7 @@ state in our state machine. Note the `launcher_target` value that is included in
         "Payload": {
           "str_value.$": "$.register.str_value",
           "bool_value.$": "$.register.option",
-          "launcher_target": "step1"
+          "pysfn_operation": "step1"
         }
       }
     }
@@ -631,11 +630,21 @@ In the step after the Lambda is invoked, a Pass state performs the mapping.
 ```
 
 # More to do!
-Right now I'm collecting feedback before I go too much further with this. There are a number of things to
-add before I'd say this is even alpha, including:
-* Take full advantage of Python type hints
-* Support functions with kwonly or posonly args
-* Add support for Map and Parallel
-* Support the full range of likely conditions
-* Tree shaking to better handle if/elif/elif/else, as well as assigning multiple variables
-* Support some common states such as calling another SFN or performing DynamoDB writes
+After a bunch of experiments and refactoring, I think I've been able to prove the utility of this approach,
+at least for the range of projects I typically use SFN for. It's still undocumented and has a lot of
+rough edges, but overall I've been thrilled at how easy it has been to iterate on new and existing SFNs
+using this approach. It significantly reduces the cognitive load I felt when working with the stages language
+and makes it much easier to build stable and well-managed data flows.
+
+That said, feedback and PRs are welcome. Over the next few months I'll hopefully be able to address the
+following:
+1. Better support for `list`, `dict`, and `attribute` access
+2. List comprehensions
+3. Support for dataclasses
+4. Real documentation
+5. Take full advantage of Python type hints
+6. Support functions with kwonly or posonly args
+7. Add support for Parallel
+8. Support the full range of likely conditions
+9. Tree shaking to better handle if/elif/elif/else, as well as assigning multiple variables
+10. Support some common integrations such as reading from S3 or performing DynamoDB writes
