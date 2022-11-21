@@ -252,26 +252,17 @@ class SFNScope:
         handlers = []
         for handler in stmt.handlers:
             child_scope = ChildScope(self)
-            exception_step = None
+            result_path = None
             if handler.name:
-                exception_step = sfn.Pass(
-                    self.cdk_stack,
-                    self.state_name(f"Register exception"),
-                    result_path="$.register",
-                    parameters=child_scope.build_register_assignment(
-                        {handler.name: JsonPath.string_at("$.error-info")}, "register."
-                    ),
-                )
+                result_path = f"$.register.{handler.name}"
+                child_scope.add_var(handler.name)
             h_chain, h_n = child_scope.handle_body(handler.body)
 
             # If the handler body isn't empty, add it in
             if h_chain:
-                if exception_step:
-                    exception_step.next(h_chain[0])
-                    h_chain = [exception_step] + h_chain
                 chain.extend(h_chain)
                 nexts.append(h_n)
-            handlers.append(self.build_exception_handler(handler, h_chain))
+            handlers.append(self.build_exception_handler(handler, h_chain, result_path))
 
         for s in chain:
             if hasattr(s, "add_catch"):
@@ -283,10 +274,13 @@ class SFNScope:
         return chain, nexts
 
     def build_exception_handler(
-        self, handler: ast.ExceptHandler, chain: List[sfn.IChainable]
+        self,
+        handler: ast.ExceptHandler,
+        chain: List[sfn.IChainable],
+        result_path: str = None,
     ):
         if isinstance(handler.type, ast.Name) and handler.type.id == "Exception":
-            return CatchHandler(["States.ALL"], chain)
+            return CatchHandler(["States.ALL"], chain, result_path=result_path)
         raise Exception(f"Unhandled exception of type {handler.type}")
 
     @staticmethod
