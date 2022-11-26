@@ -3,6 +3,7 @@ from typing import List
 import time
 from dataclasses import make_dataclass, dataclass
 import boto3
+import shortuuid
 
 
 @dataclass
@@ -80,7 +81,7 @@ def step8(values: List):
 
 
 def step9(values: List):
-    return "s3://mybucket/foo/XXXX.json", 60, True, False, 0.8
+    return f"s3://mybucket/foo/{shortuuid.uuid()[:10]}.json", 60, True, False, 0.8
 
 
 def step10(uri: str, count: int):

@@ -1,4 +1,6 @@
 import os
+import sys
+import subprocess
 import pathlib
 import shutil
 from dataclasses import dataclass
@@ -70,7 +72,7 @@ class PythonLambda:
         self.functions = {}
         self.stack = stack
         self.id_ = id_
-        self.path = path
+        self.path = pathlib.Path(path)
         self.role = role
         self.runtime = runtime
         self.timeout_minutes = timeout_minutes
@@ -140,10 +142,32 @@ class PythonLambda:
         )
         import_code = [f"import {m}" for m in modules] + ["from typing import Mapping"]
         code = import_code + ["", ""] + launch_code
+
+        # Remove the build directory if it exists
         if self.build_path.exists():
             shutil.rmtree(self.build_path)
+
+        # create the directory and copy the src dir into the build dir
         self.build_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(self.path, self.build_path)
+
+        # if there is a requirements.txt file, install the files in the build directory
+        reqs_path = self.path.joinpath("requirements.txt")
+        if reqs_path.exists():
+            # TODO: Find a way to exclude packages that are already provided in lambdas (i.e. boto3)
+            subprocess.check_call(
+                [
+                    sys.executable,
+                    "-m",
+                    "pip",
+                    "install",
+                    "-r",
+                    reqs_path,
+                    "-t",
+                    self.build_path,
+                ],
+                stdout=subprocess.DEVNULL,
+            )
 
         with open(file_path, "w") as fp:
             fp.write("\n".join(code))
