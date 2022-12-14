@@ -319,9 +319,9 @@ class SFNScope:
         raise Exception(f"Unhandled with operation: {call}")
 
     @staticmethod
-    def map_arg(arg):
+    def map_arg(arg: ast.expr, var_path: str = ""):
         if isinstance(arg, ast.Name):
-            return f"$.register.{arg.id}"
+            return f"$.{var_path}{arg.id}"
         elif isinstance(arg, ast.Constant):
             return arg.value
         elif (
@@ -329,7 +329,7 @@ class SFNScope:
             and isinstance(arg.value, ast.Name)
             and isinstance(arg.slice, ast.Constant)
         ):
-            return f"$.register.{arg.value.id}[{arg.slice.value}]"
+            return f"$.{var_path}{arg.value.id}[{arg.slice.value}]"
         else:
             raise Exception("Args must be Name or Constant")
 
@@ -351,8 +351,18 @@ class SFNScope:
                 max_concurrency = 0
             iterator = iterator.args[0]
 
-        # If the iterator is a range function, capture the parameters and create a pass step to build the value array
-        if isinstance(iterator, ast.Call) and isinstance(iterator.func, ast.Name):
+        if isinstance(iterator, ast.Call) and self._is_intrinsic_function(iterator):
+            items_path, iter_var = self._intrinsic_function(iterator)
+            iterator_step = sfn.Pass(
+                self.cdk_stack,
+                self.state_name(f"Build {iter_var}"),
+                input_path="$.register",
+                result_path="$.iter",
+                parameters={iter_var: items_path},
+            )
+            iter_var = iterator.func.id
+            items_path = f"$.iter.{iter_var}"
+        elif isinstance(iterator, ast.Call) and isinstance(iterator.func, ast.Name):
             (
                 iterator_step,
                 return_vars,
@@ -646,6 +656,40 @@ class SFNScope:
             chain.extend(else_c)
         return chain, [if_n, else_n]
 
+    def _is_intrinsic_function(self, call: ast.Call):
+        return isinstance(call.func, ast.Name) and call.func.id in [
+            "range",
+            "len",
+        ]
+
+    def _intrinsic_function(self, call: ast.Call, var_path: str = ""):
+        if isinstance(call.func, ast.Name):
+            args = [self.map_arg(arg, var_path) for arg in call.args]
+            if call.func.id == "range":
+                start_val = 0
+                end_val = 0
+                step_val = 1
+                if len(args) == 1:
+                    end_val = args[0]
+                elif len(args) >= 2:
+                    start_val = args[0]
+                    end_val = args[1]
+                if len(args) == 3:
+                    step_val = args[2]
+                return (
+                    JsonPath.string_at(
+                        f"States.ArrayRange({start_val}, States.MathAdd({end_val}, -1), {step_val})"
+                    ),
+                    "range",
+                )
+            elif call.func.id == "len":
+                if len(args) == 1:
+                    return (
+                        JsonPath.string_at(f"States.ArrayLength({args[0]})"),
+                        "len",
+                    )
+        raise Exception("Cannot handle intrinsic function")
+
     def _build_func_call(
         self,
         call: ast.Call,
@@ -667,7 +711,6 @@ class SFNScope:
             elif call.func.id in [
                 "time.sleep",
                 "sleep",
-                "range",
                 event.__name__,
                 await_token.__name__,
             ]:
@@ -682,29 +725,6 @@ class SFNScope:
                     time=sfn.WaitTime.duration(Duration.seconds(call.args[0].value)),
                 )
                 return_vars = []
-            elif call.func.id == "range":
-                start_val = 0
-                end_val = 0
-                step_val = 1
-                args = [self.map_arg(arg) for arg in call.args]
-                if len(args) == 1:
-                    end_val = args[0]
-                elif len(args) >= 2:
-                    start_val = args[0]
-                    end_val = args[1]
-                if len(args) == 3:
-                    step_val = args[2]
-                invoke = sfn.Pass(
-                    self.cdk_stack,
-                    self.state_name(f"Build range"),
-                    parameters={
-                        "range": JsonPath.string_at(
-                            f"States.ArrayRange({start_val}, States.MathAdd({end_val}, -1), {step_val})"
-                        )
-                    },
-                    result_path=result_path,
-                )
-                return_vars = ["range"]
             elif (
                 call.func.id == event.__name__
                 and len(call.args) > 0
@@ -769,11 +789,13 @@ class SFNScope:
                     self.cdk_stack,
                     self.state_name(f"Call {func.state_machine.state_machine_name}"),
                     state_machine=func.state_machine,
+                    input_path="$.register",
+                    result_path=result_path,
                     integration_pattern=sfn.IntegrationPattern.RUN_JOB,
                     input=sfn.TaskInput.from_object(params),
                 )
                 return_vars = list(func.output.keys())
-                result_prefix = ".Payload"
+                result_prefix = ".Output"
             else:
                 raise Exception(
                     f"Function without an associated Lambda: {call.func.id}"
@@ -787,52 +809,81 @@ class SFNScope:
     def handle_call_function(
         self, call: ast.Call, assign: Union[ast.Assign, ast.AnnAssign] = None,
     ) -> (List[sfn.IChainable], Callable):
-        invoke, return_vars, name, result_prefix = self._build_func_call(
-            call, "$.register.out"
-        )
-        chain = [invoke]
-        next_ = invoke.next
-
-        if assign:
-            # Get the result variable names
+        if self._is_intrinsic_function(call):
+            if not assign:
+                raise Exception(
+                    f"Call to intrinsic function {call.func.id} must be assigned to a value"
+                )
+            val, name = self._intrinsic_function(call)
             target = (
                 assign.targets[0] if isinstance(assign, ast.Assign) else assign.target
             )
             if isinstance(target, ast.Name):
-                result_targets = [target.id]
-            elif isinstance(target, ast.Tuple):
-                result_targets = [n.id for n in target.elts]
+                result_target = target.id
             else:
-                raise Exception(
-                    f"Unexpected result target of type {type(assign.target)}"
-                )
-            result_params = {
-                v: JsonPath.string_at(f"$.out{result_prefix}.{r}")
-                for v, r in zip(result_targets, return_vars)
-            }
-            if len(result_params) < len(result_targets):
-                raise Exception(
-                    f"Unable to map all response targets to return values for {name}"
-                )
+                raise Exception("Invalid intrinsic function target")
+
             register = sfn.Pass(
                 self.cdk_stack,
-                self.state_name(f"Register {call.func.id}"),
+                self.state_name(f"Register {name}"),
                 input_path="$.register",
                 result_path="$.register",
-                parameters=self.build_register_assignment(result_params),
+                parameters=self.build_register_assignment({result_target: val}),
             )
-            invoke.next(register)
-            chain.append(register)
-            next_ = register.next
+            return [register], register.next
+        else:
+            invoke, return_vars, name, result_prefix = self._build_func_call(
+                call, "$.register.out"
+            )
+            chain = [invoke]
+            next_ = invoke.next
 
-        return chain, next_
+            if assign:
+                # Get the result variable names
+                target = (
+                    assign.targets[0]
+                    if isinstance(assign, ast.Assign)
+                    else assign.target
+                )
+                if isinstance(target, ast.Name):
+                    result_targets = [target.id]
+                elif isinstance(target, ast.Tuple) and all(
+                    isinstance(t, ast.Name) for t in target.elts
+                ):
+                    result_targets = [n.id for n in target.elts]
+                else:
+                    raise Exception(
+                        f"Unexpected result target of type {type(assign.target)}"
+                    )
+                result_params = {
+                    v: JsonPath.string_at(f"$.out{result_prefix}.{r}")
+                    for v, r in zip(result_targets, return_vars)
+                }
+                if len(result_params) < len(result_targets):
+                    raise Exception(
+                        f"Unable to map all response targets to return values for {name}"
+                    )
+                register = sfn.Pass(
+                    self.cdk_stack,
+                    self.state_name(f"Register {call.func.id}"),
+                    input_path="$.register",
+                    result_path="$.register",
+                    parameters=self.build_register_assignment(result_params),
+                )
+                invoke.next(register)
+                chain.append(register)
+                next_ = register.next
 
-    @staticmethod
-    def _return_value(value: Union[ast.expr, ast.stmt]):
+            return chain, next_
+
+    def _return_value(self, value: Union[ast.expr, ast.stmt]):
         if isinstance(value, ast.Name):
             return JsonPath.string_at(f"$.register.{value.id}")
         elif isinstance(value, ast.Constant):
             return value.value
+        elif isinstance(value, ast.Call) and self._is_intrinsic_function(value):
+            val, name = self._intrinsic_function(value)
+            return val
         else:
             raise Exception(f"Unanticipated return type: {value}")
 
@@ -907,6 +958,21 @@ class SFNScope:
                 next_ = [choice.otherwise, assign.next]
         return chain, next_
 
+    def evaluate_path(self, stmt: ast.Subscript) -> str:
+        if isinstance(stmt.slice, ast.Constant):
+            if isinstance(stmt.slice.value, int):
+                slce = f"[{stmt.slice.value}]"
+            else:
+                slce = f".{stmt.slice.value}"
+        else:
+            raise Exception("Subscript slice that's not a Constant")
+        if isinstance(stmt.value, ast.Name):
+            return stmt.value.id + slce
+        elif isinstance(stmt.value, ast.Subscript):
+            return self.evaluate_path(stmt.value) + slce
+        else:
+            raise Exception("Unexpected Subscript value")
+
     def generate_value_repr(self, arg_value, gen_jsonpath=True):
         if isinstance(arg_value, ast.Name):
             # if arg_value.id not in self.variables:
@@ -918,15 +984,8 @@ class SFNScope:
         elif isinstance(arg_value, ast.List):
             expr = [self.generate_value_repr(val, False) for val in arg_value.elts]
             return JsonPath.array(*expr) if gen_jsonpath else expr
-        elif (
-            isinstance(arg_value, ast.Subscript)
-            and isinstance(arg_value.value, ast.Name)
-            and isinstance(arg_value.slice, ast.Constant)
-        ):
-            if isinstance(arg_value.slice.value, int):
-                expr = f"$.{arg_value.value.id}[{arg_value.slice.value}]"
-            else:
-                expr = f"$.{arg_value.value.id}.{arg_value.slice.value}"
+        elif isinstance(arg_value, ast.Subscript):
+            expr = "$." + self.evaluate_path(arg_value)
             return JsonPath.string_at(expr) if gen_jsonpath else expr
         elif isinstance(arg_value, ast.Dict):
             obj = {}
@@ -948,7 +1007,18 @@ class SFNScope:
             )
         ):
             return getattr(JsonPath, arg_value.attr)
+        elif isinstance(arg_value, ast.Call) and (
+            (
+                isinstance(arg_value.func, ast.Attribute)
+                and isinstance(arg_value.func.value, ast.Name)
+                and arg_value.func.value.id == "JsonPath"
+            )
+        ):
+            # TODO: Handle multi arg inputs
+            arg = self.generate_value_repr(arg_value.args[0], gen_jsonpath=True)
+            return getattr(JsonPath, arg_value.func.attr)(arg)
         else:
+            print(ast.dump(arg_value, indent=2))
             raise Exception(f"Unexpected argument: {arg_value}")
 
 

@@ -250,10 +250,19 @@ class ProtoAppStack(Stack):
             try:
                 values = step8(successful_uris)
                 (out_uri, value_count, valid, has_detail, score,) = step9(values)
-                return out_uri, value_count, valid, has_detail, score, values, None
+                return (
+                    out_uri,
+                    value_count,
+                    valid,
+                    has_detail,
+                    score,
+                    values,
+                    None,
+                    len(successful_uris),
+                )
             except Exception:
                 message = "Processing failed"
-                return None, None, None, None, None, None, message
+                return None, None, None, None, None, None, message, len(successful_uris)
 
         @state_machine(self, "pysfn-mapping", locals())
         def mapping(uri: str, count: int = 5):
