@@ -14,7 +14,7 @@ setuptools.setup(
     packages=setuptools.find_packages(exclude=["test"]),
     include_package_data=False,
     keywords="aws, step function",
-    python_requires=">=3.8",
+    python_requires=">=3.9",
     install_requires=["shortuuid", "aws-cdk-lib", "constructs"],
     classifiers=[
         "Programming Language :: Python :: 3",

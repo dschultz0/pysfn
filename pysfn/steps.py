@@ -2,7 +2,6 @@ import inspect
 import pathlib
 import ast
 import json
-import sys
 import typing
 from .function import gather_function_attributes, FunctionAttributes
 from dataclasses import dataclass
@@ -104,7 +103,7 @@ class FunctionToSteps:
 
         self.ast = func_attrs.tree
         with open(pathlib.Path("build", f"{func_attrs.name}_ast.txt"), "w") as fp:
-            fp.write(safe_dump(self.ast, indent=2))
+            fp.write(ast.dump(self.ast, indent=2))
 
         # Get the function root
         if (
@@ -243,7 +242,7 @@ class SFNScope:
 
         # Treat unhandled statements as a no-op
         print(f"Unhandled {repr(stmt)}")
-        print(safe_dump(stmt, indent=2))
+        print(ast.dump(stmt, indent=2))
         return [], None
 
     def handle_with(self, stmt: ast.With):
@@ -1019,7 +1018,7 @@ class SFNScope:
             arg = self.generate_value_repr(arg_value.args[0], gen_jsonpath=True)
             return getattr(JsonPath, arg_value.func.attr)(arg)
         else:
-            print(safe_dump(arg_value, indent=2))
+            print(ast.dump(arg_value, indent=2))
             raise Exception(f"Unexpected argument: {arg_value}")
 
 
@@ -1120,10 +1119,3 @@ def update_param_name(key, value):
         return f"{key}.$"
     else:
         return key
-
-
-def safe_dump(tree: ast.AST, indent=2):
-    if sys.version_info.minor >= 9:
-        return ast.dump(tree, indent=indent)
-    else:
-        return ast.dump(tree)
