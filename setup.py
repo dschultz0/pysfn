@@ -4,7 +4,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 setuptools.setup(
     name="pysfn",
-    version="0.1.4",
+    version="0.1.5",
     author="Dave Schultz",
     author_email="dave@daveschultzconsulting.com",
     description="Transpiler for AWS Step Functions",
