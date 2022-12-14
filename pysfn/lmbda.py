@@ -161,6 +161,7 @@ class PythonLambda:
                     "-m",
                     "pip",
                     "install",
+                    "--no-deps",
                     "-r",
                     reqs_path,
                     "-t",
