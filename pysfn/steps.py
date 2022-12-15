@@ -987,6 +987,9 @@ class SFNScope:
         elif isinstance(arg_value, ast.Subscript):
             expr = "$." + self.evaluate_path(arg_value)
             return JsonPath.string_at(expr) if gen_jsonpath else expr
+        elif isinstance(arg_value, ast.Call) and self._is_intrinsic_function(arg_value):
+            path, name = self._intrinsic_function(arg_value)
+            return path
         elif isinstance(arg_value, ast.Dict):
             obj = {}
             for k, v in zip(arg_value.keys, arg_value.values):
