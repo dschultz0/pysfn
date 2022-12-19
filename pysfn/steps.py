@@ -44,6 +44,14 @@ def event(func: Callable):
     pass
 
 
+def execution_start_time() -> str:
+    pass
+
+
+def state_entered_time() -> str:
+    pass
+
+
 def await_token(
     func: Callable,
     return_args: Union[List[str], Mapping[str, Type]],
@@ -660,6 +668,8 @@ class SFNScope:
         return isinstance(call.func, ast.Name) and call.func.id in [
             "range",
             "len",
+            "execution_start_time",
+            "state_entered_time",
         ]
 
     def _intrinsic_function(self, call: ast.Call, var_path: str = ""):
@@ -688,6 +698,16 @@ class SFNScope:
                         JsonPath.string_at(f"States.ArrayLength({args[0]})"),
                         "len",
                     )
+            elif call.func.id == "execution_start_time":
+                return (
+                    JsonPath.string_at(f"$$.Execution.StartTime"),
+                    "time",
+                )
+            elif call.func.id == "state_entered_time":
+                return (
+                    JsonPath.string_at(f"$$.State.EnteredTime"),
+                    "time",
+                )
         raise Exception("Cannot handle intrinsic function")
 
     def _build_func_call(
