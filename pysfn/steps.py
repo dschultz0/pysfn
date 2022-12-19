@@ -17,6 +17,7 @@ from aws_cdk import (
 from aws_cdk.aws_stepfunctions import JsonPath
 
 from .condition import build_condition
+from .s3 import write_json, read_json, build_s3_write_json_step, build_s3_read_json_step
 
 SFN_INDEX = 0
 
@@ -728,6 +729,10 @@ class SFNScope:
                 params = self.build_parameters(call, func)
                 if hasattr(func, "get_additional_params"):
                     params.update(func.get_additional_params())
+            elif call.func.id == write_json.__name__:
+                params = self.build_parameters(call, write_json, False)
+            elif call.func.id == read_json.__name__:
+                params = self.build_parameters(call, read_json, False)
             elif call.func.id in [
                 "time.sleep",
                 "sleep",
@@ -816,6 +821,18 @@ class SFNScope:
                 )
                 return_vars = list(func.output.keys())
                 result_prefix = ".Output"
+            elif call.func.id == write_json.__name__:
+                invoke = build_s3_write_json_step(
+                    self.cdk_stack, self.state_name("S3 Write JSON"), **params
+                )
+                return_vars = ["ETag"]
+                result_prefix = ""
+            elif call.func.id == read_json.__name__:
+                invoke = build_s3_read_json_step(
+                    self.cdk_stack, self.state_name("S3 Read JSON"), **params
+                )
+                return_vars = ["Body", "LastModified", "ETag"]
+                result_prefix = ""
             else:
                 raise Exception(
                     f"Function without an associated Lambda: {call.func.id}"

@@ -5,18 +5,39 @@ from aws_cdk import (
     aws_iam as iam,
     aws_lambda as lmbda,
     aws_stepfunctions as sfn,
+    aws_s3 as s3,
+    aws_dynamodb as dynamodb,
     Duration,
     Stack,
 )
 from constructs import Construct
 from pysfn.lmbda import PythonLambda, function_for_lambda
-from pysfn.steps import state_machine, Retry, concurrent, event, await_token
+from pysfn.s3 import write_json, read_json
+from pysfn.steps import (
+    state_machine,
+    Retry,
+    concurrent,
+    event,
+    await_token,
+    execution_start_time,
+    state_entered_time,
+)
 from . import operations
 
 
 class ProtoAppStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
         super().__init__(scope, construct_id, **kwargs)
+
+        self.bucket = s3.Bucket(self, "pysfn-bucket")
+        self.table = dynamodb.Table(
+            self,
+            "pysfn-table",
+            billing_mode=dynamodb.BillingMode.PAY_PER_REQUEST,
+            partition_key=dynamodb.Attribute(
+                name="id", type=dynamodb.AttributeType.STRING
+            ),
+        )
 
         self.lambda_role = iam.Role(
             self,
@@ -331,3 +352,24 @@ class ProtoAppStack(Stack):
                 error = ex
 
             return result
+
+        @state_machine(self, "pysfn-s3", locals())
+        def s3_read_write(str_value: str, option: bool = False):
+            (
+                available,
+                mode,
+                option,
+                processing_seconds,
+                code_value,
+                type_value,
+            ) = step1(str_value, option)
+            obj = {
+                "available": available,
+                "mode": mode,
+                "type_value": type_value,
+                "execution_time": execution_start_time(),
+                "state_time": state_entered_time(),
+            }
+            key = sfn.JsonPath.format("{}.json", sfn.JsonPath.uuid())
+            etag = write_json(obj, self.bucket, key)
+            read_obj, last_modified, read_etag = read_json(self.bucket, key)
