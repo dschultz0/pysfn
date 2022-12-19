@@ -1010,6 +1010,31 @@ class SFNScope:
             )
         ):
             return getattr(JsonPath, arg_value.attr)
+        elif (
+            isinstance(arg_value, ast.Call)
+            and isinstance(arg_value.func, ast.Attribute)
+            and (
+                (
+                    isinstance(arg_value.func.value, ast.Name)
+                    and arg_value.func.value.id == "JsonPath"
+                )
+                or (
+                    isinstance(arg_value.func.value, ast.Attribute)
+                    and arg_value.func.value.attr == "JsonPath"
+                )
+            )
+        ):
+            return getattr(JsonPath, arg_value.func.attr)(
+                *[self.generate_value_repr(arg, gen_jsonpath) for arg in arg_value.args]
+            )
+        elif (
+            isinstance(arg_value, ast.Attribute)
+            and isinstance(arg_value.value, ast.Name)
+            and arg_value.value.id == "self"
+        ):
+            s = self.fts.local_values.get(arg_value.value.id)
+            var = s.__getattribute__(arg_value.attr)
+            return var
         elif isinstance(arg_value, ast.Call) and (
             (
                 isinstance(arg_value.func, ast.Attribute)
@@ -1022,7 +1047,7 @@ class SFNScope:
             return getattr(JsonPath, arg_value.func.attr)(arg)
         else:
             print(ast.dump(arg_value, indent=2))
-            raise Exception(f"Unexpected argument: {arg_value}")
+            raise Exception(f"Unexpected argument: {ast.dump(arg_value)}")
 
 
 class MapScope(SFNScope):
