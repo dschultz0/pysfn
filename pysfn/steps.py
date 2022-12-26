@@ -151,6 +151,7 @@ class SFNScope:
         self.state_name = fts.state_name
         self.variables: Dict[str, typing.Type] = {}
         self.output = fts.output
+        self.parent_scope = None
 
     def generate_entry_steps(
         self, required_parameters, optional_parameters: Mapping[str, Any] = None
@@ -193,7 +194,8 @@ class SFNScope:
         pass
 
     def _updated_var(self, var: str):
-        pass
+        if self.parent_scope:
+            self.parent_scope._updated_var(var)
 
     def handle_body(self, body: List[ast.stmt]) -> (List[sfn.IChainable], Callable):
         chain = []
@@ -1093,6 +1095,7 @@ class MapScope(SFNScope):
         self.variables = parent_scope.variables.copy()
         self.scoped_variables = []
         self._updated_vars = []
+        self.parent_scope = parent_scope
 
     def _added_var(self, var: str):
         self.scoped_variables.append(var)
@@ -1120,6 +1123,7 @@ class ChildScope(SFNScope):
         super(ChildScope, self).__init__(parent_scope.fts)
         self.variables = parent_scope.variables.copy()
         self.scoped_variables = []
+        self.parent_scope = parent_scope
 
     def _added_var(self, var: str):
         self.scoped_variables.append(var)
