@@ -6,7 +6,7 @@ from aws_cdk import (
 from aws_cdk.aws_stepfunctions import JsonPath
 
 
-def write_json(obj: Union[dict, list], bucket: s3.Bucket, key: str) -> str:
+def write_json(obj: Union[dict, list], bucket: s3.IBucket, key: str) -> str:
     pass
 
 
@@ -18,7 +18,7 @@ def build_s3_write_json_step(
     stack,
     id_: str,
     obj: Union[dict, list, str],
-    bucket: Union[str, s3.Bucket],
+    bucket: Union[str, s3.IBucket],
     key: Union[str, JsonPath],
 ):
     return tasks.CallAwsService(
