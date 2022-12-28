@@ -1216,15 +1216,15 @@ class MapScope(SFNScope):
     def __init__(self, parent_scope: SFNScope):
         super(MapScope, self).__init__(parent_scope.fts)
         self.variables = parent_scope.variables.copy()
-        self.scoped_variables = []
-        self._updated_vars = []
+        self.scoped_variables = set()
+        self._updated_vars = set()
         self.parent_scope = parent_scope
 
     def _added_var(self, var: str):
-        self.scoped_variables.append(var)
+        self.scoped_variables.add(var)
 
     def _updated_var(self, var: str):
-        self._updated_vars.append(var)
+        self._updated_vars.add(var)
 
     def build_entry_step(self, entry_var: str):
         return sfn.Pass(
@@ -1250,6 +1250,8 @@ class ChildScope(SFNScope):
 
     def _added_var(self, var: str):
         self.scoped_variables.append(var)
+        if self.parent_scope:
+            self.parent_scope._added_var(var)
 
 
 def advance(
