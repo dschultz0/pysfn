@@ -1313,3 +1313,13 @@ def update_param_name(key, value):
         return f"{key}.$"
     else:
         return key
+
+
+def get_call_args(call: ast.Call) -> (List, Mapping):
+    args = []
+    kwargs = {}
+    for arg in call.args:
+        args.append(arg)
+    for kw in call.keywords:
+        kwargs[kw.arg] = kw.value
+    return args, kwargs
