@@ -6,6 +6,7 @@ import typing
 from .function import gather_function_attributes, FunctionAttributes
 from dataclasses import dataclass
 from types import BuiltinFunctionType
+from . import state_types
 from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional, Type
 
 from aws_cdk import (
@@ -37,7 +38,13 @@ class CatchHandler:
     result_path: str = "$.error-info"
 
 
-def concurrent(iterable, max_concurrency: Optional[int] = None):
+def concurrent(
+    iterable,
+    max_concurrency: Optional[int] = None,
+    distributed=False,
+    tolerated_failure_percentage=None,
+    tolerated_failure_count=None,
+):
     pass
 
 
@@ -76,20 +83,45 @@ def state_machine(
 
     def decorator(func):
         func_attrs = gather_function_attributes(func, None, return_vars)
-        fts = FunctionToSteps(cdk_stack, func_attrs, local_values, skip_pass=skip_pass)
-        func.state_machine = sfn.StateMachine(
-            cdk_stack,
-            sfn_name,
-            state_machine_name=sfn_name,
-            state_machine_type=sfn.StateMachineType.EXPRESS
-            if express
-            else sfn.StateMachineType.STANDARD,
-            definition=fts.build_sfn_definition(),
-        )
+        fts = FunctionToSteps2(cdk_stack, func_attrs, local_values, skip_pass=skip_pass)
         func.output = func_attrs.output
         return func
 
     return decorator
+
+
+class FunctionToSteps2:
+    def __init__(
+        self,
+        cdk_stack: Stack,
+        func_attrs: FunctionAttributes,
+        local_values,
+        skip_pass=True,
+    ):
+        global SFN_INDEX
+        self.cdk_stack = cdk_stack
+        self.func = func_attrs.func
+        self.output = func_attrs.output
+        self.local_values = local_values
+        self.state_number = 0
+        self.sfn_number = SFN_INDEX
+        self.skip_pass = skip_pass
+        SFN_INDEX += 1
+
+        self.ast = func_attrs.tree
+        with open(pathlib.Path("build", f"{func_attrs.name}_ast.txt"), "w") as fp:
+            fp.write(ast.dump(self.ast, indent=2, include_attributes=True))
+
+        # Get the function root
+        if (
+            isinstance(self.ast, ast.Module)
+            and len(self.ast.body) == 1
+            and isinstance(self.ast.body[0], ast.FunctionDef)
+        ):
+            self.function_def: ast.FunctionDef
+            self.function_def = self.ast.body[0]
+        else:
+            raise Exception("Unexpected function definition")
 
 
 class FunctionToSteps:
@@ -472,6 +504,9 @@ class SFNScope:
         # TODO: Support callable iterator
         max_concurrency = 1
         iterator_step = None
+        distributed = False
+        tol_fail_perc = None
+        tol_fail_count = None
 
         # if the iterator is wrapped in a 'concurrent' function, capture the parameter as the concurrency for the map
         if (
@@ -479,10 +514,19 @@ class SFNScope:
             and isinstance(iterator.func, ast.Name)
             and iterator.func.id == "concurrent"
         ):
-            if len(iterator.args) > 1:
-                max_concurrency = iterator.args[1].value
+            args, kwargs = get_call_args(iterator)
+            m_c = kwargs.get("max_concurrency")
+            if len(args) > 1 and isinstance(args[1], ast.Constant):
+                # TODO: Check for type other than constant
+                max_concurrency = args[1].value
+            if m_c and isinstance(m_c, ast.Constant):
+                max_concurrency = m_c.value
             else:
                 max_concurrency = 0
+            distributed = kwargs.get("distributed", False)
+            tol_fail_perc = kwargs.get("tolerated_failure_percentage")
+            tol_fail_count = kwargs.get("tolerated_failure_count")
+
             iterator = iterator.args[0]
 
         if isinstance(iterator, ast.Call) and self._is_intrinsic_function(iterator):
@@ -512,12 +556,26 @@ class SFNScope:
             items_path = f"$.register.{iter_var}"
         else:
             raise Exception("Unsupported for-loop iterator, variables only")
-        return iter_var, items_path, iterator_step, max_concurrency
+        return (
+            iter_var,
+            items_path,
+            iterator_step,
+            max_concurrency,
+            distributed,
+            tol_fail_perc,
+            tol_fail_count,
+        )
 
     def handle_for(self, stmt: ast.For):
-        iter_var, items_path, iterator_step, max_concurrency = self._get_iterator(
-            stmt.iter
-        )
+        (
+            iter_var,
+            items_path,
+            iterator_step,
+            max_concurrency,
+            distributed,
+            tol_fail_perc,
+            tol_fail_count,
+        ) = self._get_iterator(stmt.iter)
         if not isinstance(stmt.target, ast.Name):
             raise Exception("Unsupported for-loop target, variables only")
 

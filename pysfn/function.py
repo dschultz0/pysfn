@@ -7,12 +7,16 @@ from itertools import zip_longest, islice
 
 def get_function_ast(func: Callable):
     # Retrieve the source code for the function with any indent removed
-    src_code = inspect.getsource(func).split("\n")
+    # src_code = inspect.getsource(func).split("\n")
+    src_code, line_index = inspect.getsourcelines(func)
+    file_name = inspect.getfile(func)
     indent = len(src_code[0]) - len(src_code[0].lstrip())
     src_code = [c[indent:] for c in src_code]
 
     # Build the AST
-    return ast.parse("\n".join(src_code))
+    tree = ast.parse("".join(src_code), filename=file_name)
+    ast.increment_lineno(tree, line_index - 1)
+    return tree
 
 
 @dataclass
