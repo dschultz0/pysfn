@@ -3,7 +3,7 @@ from aws_cdk import aws_stepfunctions as sfn
 from typing import Dict, Tuple, Callable
 
 # Limited comparisons types for now...
-comparator_map: Dict[Tuple] = {
+comparator_map: Dict[Tuple, Tuple] = {
     (ast.Eq, str): (sfn.Condition.string_equals, "=="),
     (ast.Eq, int): (sfn.Condition.number_equals, "=="),
     (ast.Gt, int): (sfn.Condition.number_greater_than, ">"),
