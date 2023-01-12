@@ -13,6 +13,7 @@ from aws_cdk import (
 from constructs import Construct
 from pysfn.lmbda import PythonLambda, function_for_lambda
 from pysfn.s3 import write_json, read_json
+from pysfn.dynamo import write_item, read_item, update_item
 from pysfn.steps import (
     state_machine,
     Retry,
@@ -373,3 +374,25 @@ class ProtoAppStack(Stack):
             key = sfn.JsonPath.format("{}.json", sfn.JsonPath.uuid())
             etag = write_json(obj, self.bucket, key)
             read_obj, last_modified, read_etag = read_json(self.bucket, key)
+
+        # @state_machine(self, "pysfn-dynamo", locals())
+        def dynamo_read_write(str_value: str, option: bool = False):
+            (
+                available,
+                mode,
+                option,
+                processing_seconds,
+                code_value,
+                type_value,
+            ) = step1(str_value, option)
+            item = {
+                "id": sfn.JsonPath.uuid(),
+                "available": available,
+                "mode": mode,
+                "type_value": type_value,
+                "execution_time": execution_start_time(),
+                "state_time": state_entered_time(),
+            }
+            write_item(self.table, item)
+            key = {"id": item["id"]}
+            read_item(self.table, key)
