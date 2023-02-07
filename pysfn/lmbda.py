@@ -64,7 +64,8 @@ class PythonLambda:
         role,
         runtime,
         timeout_minutes,
-        memory_mb,
+        memory_mb: Optional[int] = None,
+        memory_gb: Optional[int] = None,
         layers=None,
         environment=None,
         name=None,
@@ -76,7 +77,15 @@ class PythonLambda:
         self.role = role
         self.runtime = runtime
         self.timeout_minutes = timeout_minutes
-        self.memory_size = int(memory_mb * 1024)
+        if memory_gb is not None and memory_mb is not None:
+            raise ValueError("You can specify memory_mb or memory_gb, not both")
+        if memory_gb:
+            self.memory_size = int(memory_gb * 1024)
+        elif memory_mb:
+            # TODO: Fix later...
+            self.memory_size = int(memory_mb * 1024)
+        else:
+            raise ValueError("No memory size specified")
         self.layers = (
             [resolve_layer(layer, stack) for layer in layers] if layers else None
         )

@@ -4,8 +4,8 @@ import ast
 import json
 import typing
 from .function import gather_function_attributes, FunctionAttributes
-from dataclasses import dataclass
-from types import BuiltinFunctionType
+from dataclasses import dataclass, asdict
+from types import BuiltinFunctionType, FrameType
 from . import state_types
 from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional, Type
 
@@ -71,7 +71,6 @@ def await_token(
 def state_machine(
     cdk_stack: Stack,
     sfn_name: str,
-    local_values,
     express=False,
     skip_pass=True,
     return_vars: Optional[Union[List[str], Mapping[str, typing.Type]]] = None,
@@ -83,8 +82,12 @@ def state_machine(
 
     def decorator(func):
         func_attrs = gather_function_attributes(func, None, return_vars)
-        fts = FunctionToSteps2(cdk_stack, func_attrs, local_values, skip_pass=skip_pass)
-        func.output = func_attrs.output
+        frame = inspect.currentframe()
+        try:
+            fts = FunctionToSteps2(cdk_stack, func_attrs, frame, skip_pass=skip_pass)
+            func.output = func_attrs.output
+        finally:
+            del frame
         return func
 
     return decorator
@@ -95,14 +98,15 @@ class FunctionToSteps2:
         self,
         cdk_stack: Stack,
         func_attrs: FunctionAttributes,
-        local_values,
+        frame: FrameType,
         skip_pass=True,
     ):
         global SFN_INDEX
         self.cdk_stack = cdk_stack
         self.func = func_attrs.func
         self.output = func_attrs.output
-        self.local_values = local_values
+        self.local_values = frame.f_locals
+        self.global_values = frame.f_globals
         self.state_number = 0
         self.sfn_number = SFN_INDEX
         self.skip_pass = skip_pass
@@ -110,7 +114,7 @@ class FunctionToSteps2:
 
         self.ast = func_attrs.tree
         with open(pathlib.Path("build", f"{func_attrs.name}_ast.txt"), "w") as fp:
-            fp.write(ast.dump(self.ast, indent=2, include_attributes=True))
+            fp.write(ast.dump(self.ast, indent=2))
 
         # Get the function root
         if (
