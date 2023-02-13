@@ -317,6 +317,7 @@ class ProtoAppStack(Stack):
         def token_callback(str_value: str):
             # Simply trigger asynchronously
             event(delayed_step(str_value))
+            error = None
 
             # Callback will be called after 30 seconds, sfn will wait up to 2 minutes
             result = await_token(
@@ -352,7 +353,7 @@ class ProtoAppStack(Stack):
             except Exception as ex:
                 error = ex
 
-            return result
+            return result, error
 
         @state_machine(self, "pysfn-s3", locals())
         def s3_read_write(str_value: str, option: bool = False):
