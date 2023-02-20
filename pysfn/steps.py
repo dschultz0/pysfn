@@ -17,7 +17,7 @@ from aws_cdk import (
 from aws_cdk.aws_stepfunctions import JsonPath
 
 from .condition import build_condition
-from .s3 import write_json, read_json, build_s3_write_json_step, build_s3_read_json_step
+from .service_operations import service_operations
 
 SFN_INDEX = 0
 
@@ -109,6 +109,7 @@ class FunctionToSteps:
         self.sfn_number = SFN_INDEX
         self.skip_pass = skip_pass
         SFN_INDEX += 1
+        print(local_values)
 
         self.ast = func_attrs.tree
         with open(pathlib.Path("build", f"{func_attrs.name}_ast.txt"), "w") as fp:
@@ -200,6 +201,13 @@ class SFNScope:
     def handle_body(self, body: List[ast.stmt]) -> (List[sfn.IChainable], Callable):
         chain = []
         next_ = None
+        # If the first statement is a function doc string we can drop it
+        if (
+            len(body) > 0
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+        ):
+            body = body[1:]
         for stmt in body:
             c, n = self.handle_op(stmt)
             chain.extend(c)
@@ -731,10 +739,10 @@ class SFNScope:
                 params = self.build_parameters(call, func)
                 if hasattr(func, "get_additional_params"):
                     params.update(func.get_additional_params())
-            elif call.func.id == write_json.__name__:
-                params = self.build_parameters(call, write_json, False)
-            elif call.func.id == read_json.__name__:
-                params = self.build_parameters(call, read_json, False)
+            elif call.func.id in service_operations:
+                params = self.build_parameters(
+                    call, service_operations[call.func.id], False
+                )
             elif call.func.id in [
                 "time.sleep",
                 "sleep",
@@ -823,17 +831,12 @@ class SFNScope:
                 )
                 return_vars = list(func.output.keys())
                 result_prefix = ".Output"
-            elif call.func.id == write_json.__name__:
-                invoke = build_s3_write_json_step(
-                    self.cdk_stack, self.state_name("S3 Write JSON"), **params
+            elif call.func.id in service_operations:
+                method = service_operations[call.func.id]
+                invoke = method.builder(
+                    self.cdk_stack, self.state_name(method.step_name), **params
                 )
-                return_vars = ["ETag"]
-                result_prefix = ""
-            elif call.func.id == read_json.__name__:
-                invoke = build_s3_read_json_step(
-                    self.cdk_stack, self.state_name("S3 Read JSON"), **params
-                )
-                return_vars = ["Body", "LastModified", "ETag"]
+                return_vars = method.return_vars
                 result_prefix = ""
             else:
                 raise Exception(
@@ -860,7 +863,9 @@ class SFNScope:
             if isinstance(target, ast.Name):
                 result_target = target.id
             else:
-                raise Exception("Invalid intrinsic function target")
+                raise Exception(
+                    f"Invalid intrinsic function target {target} for call {call.func.id}"
+                )
 
             register = sfn.Pass(
                 self.cdk_stack,

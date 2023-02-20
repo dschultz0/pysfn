@@ -1,9 +1,11 @@
 import os
+import typing
 from time import sleep
 from typing import List, Union
 from aws_cdk import (
     aws_iam as iam,
     aws_lambda as lmbda,
+    aws_sqs as sqs,
     aws_stepfunctions as sfn,
     aws_s3 as s3,
     aws_dynamodb as dynamodb,
@@ -12,8 +14,16 @@ from aws_cdk import (
 )
 from constructs import Construct
 from pysfn.lmbda import PythonLambda, function_for_lambda
-from pysfn.s3 import write_json, read_json
-from pysfn.dynamo import write_item, read_item, update_item
+from pysfn.service_operations import (
+    s3_write_json,
+    s3_read_json,
+    sqs_send_message,
+    dynamo_write_item,
+    dynamo_read_item,
+    dynamo_update_item,
+    sqs_receive_message,
+    sqs_delete_message,
+)
 from pysfn.steps import (
     state_machine,
     Retry,
@@ -39,6 +49,7 @@ class ProtoAppStack(Stack):
                 name="id", type=dynamodb.AttributeType.STRING
             ),
         )
+        self.queue = sqs.Queue(self, "pysfn-queue")
 
         self.lambda_role = iam.Role(
             self,
@@ -373,8 +384,16 @@ class ProtoAppStack(Stack):
                 "state_time": state_entered_time(),
             }
             key = sfn.JsonPath.format("{}.json", sfn.JsonPath.uuid())
-            etag = write_json(obj, self.bucket, key)
-            read_obj, last_modified, read_etag = read_json(self.bucket, key)
+            etag = s3_write_json(obj, self.bucket, key)
+            read_obj, last_modified, read_etag = s3_read_json(self.bucket, key)
+
+        @state_machine(self, "pysfn-sqs", locals())
+        def sqs_send_receive(message: typing.Union[str, dict]):
+            message_id = sqs_send_message(self.queue, message)
+            sleep(5)
+            messages = sqs_receive_message(self.queue, wait_time_seconds=10)
+            for message in messages:
+                sqs_delete_message(self.queue, message["ReceiptHandle"])
 
         # @state_machine(self, "pysfn-dynamo", locals())
         def dynamo_read_write(str_value: str, option: bool = False):
@@ -394,6 +413,6 @@ class ProtoAppStack(Stack):
                 "execution_time": execution_start_time(),
                 "state_time": state_entered_time(),
             }
-            write_item(self.table, item)
+            dynamo_write_item(self.table, item)
             key = {"id": item["id"]}
-            read_item(self.table, key)
+            dynamo_read_item(self.table, key)
