@@ -3,9 +3,11 @@ import pathlib
 import ast
 import json
 import typing
+import time
+
 from .function import gather_function_attributes, FunctionAttributes
 from dataclasses import dataclass
-from types import BuiltinFunctionType
+from types import BuiltinFunctionType, FrameType
 from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional, Type
 
 from aws_cdk import (
@@ -64,7 +66,7 @@ def await_token(
 def state_machine(
     cdk_stack: Stack,
     sfn_name: str,
-    local_values,
+    local_values=None,  # DEPRECATED
     express=False,
     skip_pass=True,
     return_vars: Optional[Union[List[str], Mapping[str, typing.Type]]] = None,
@@ -76,17 +78,24 @@ def state_machine(
 
     def decorator(func):
         func_attrs = gather_function_attributes(func, None, return_vars)
-        fts = FunctionToSteps(cdk_stack, func_attrs, local_values, skip_pass=skip_pass)
-        func.state_machine = sfn.StateMachine(
-            cdk_stack,
-            sfn_name,
-            state_machine_name=sfn_name,
-            state_machine_type=sfn.StateMachineType.EXPRESS
-            if express
-            else sfn.StateMachineType.STANDARD,
-            definition=fts.build_sfn_definition(),
-        )
-        func.output = func_attrs.output
+        stack = inspect.stack()
+        try:
+            fts = FunctionToSteps(
+                cdk_stack, func_attrs, stack[1].frame, skip_pass=skip_pass
+            )
+            print(sfn_name)
+            func.state_machine = sfn.StateMachine(
+                cdk_stack,
+                sfn_name,
+                state_machine_name=sfn_name,
+                state_machine_type=sfn.StateMachineType.EXPRESS
+                if express
+                else sfn.StateMachineType.STANDARD,
+                definition=fts.build_sfn_definition(),
+            )
+            func.output = func_attrs.output
+        finally:
+            del stack
         return func
 
     return decorator
@@ -97,19 +106,19 @@ class FunctionToSteps:
         self,
         cdk_stack: Stack,
         func_attrs: FunctionAttributes,
-        local_values,
+        frame: FrameType,
         skip_pass=True,
     ):
         global SFN_INDEX
         self.cdk_stack = cdk_stack
         self.func = func_attrs.func
         self.output = func_attrs.output
-        self.local_values = local_values
+        self.local_values = frame.f_locals
+        self.global_values = frame.f_globals
         self.state_number = 0
         self.sfn_number = SFN_INDEX
         self.skip_pass = skip_pass
         SFN_INDEX += 1
-        print(local_values)
 
         self.ast = func_attrs.tree
         with open(pathlib.Path("build", f"{func_attrs.name}_ast.txt"), "w") as fp:
@@ -143,6 +152,9 @@ class FunctionToSteps:
 
         write_definition_json(self.func.__name__, start)
         return start
+
+    def get_frame_value(self, name):
+        return self.local_values.get(name, self.global_values.get(name))
 
 
 class SFNScope:
@@ -731,29 +743,23 @@ class SFNScope:
     ) -> (sfn.State, List[str], str):
         if isinstance(call.func, ast.Name):
             # Get the function
-            func = self.fts.local_values.get(call.func.id)
+            func = self.fts.get_frame_value(call.func.id)
             result_prefix = ""
 
             # Build the parameters
             if func:
-                params = self.build_parameters(call, func)
-                if hasattr(func, "get_additional_params"):
-                    params.update(func.get_additional_params())
-            elif call.func.id in service_operations:
-                params = self.build_parameters(
-                    call, service_operations[call.func.id], False
-                )
-            elif call.func.id in [
-                "time.sleep",
-                "sleep",
-                event.__name__,
-                await_token.__name__,
-            ]:
-                params = {}
+                if func in service_operations:
+                    params = self.build_parameters(call, func, False)
+                elif func in [time.sleep, event, await_token]:
+                    params = {}
+                else:
+                    params = self.build_parameters(call, func)
+                    if hasattr(func, "get_additional_params"):
+                        params.update(func.get_additional_params())
             else:
                 raise Exception(f"Unable to find function {call.func.id}")
 
-            if call.func.id in ["time.sleep", "sleep"]:
+            if func == time.sleep:
                 invoke = sfn.Wait(
                     self.cdk_stack,
                     self.state_name("Wait"),
@@ -761,7 +767,7 @@ class SFNScope:
                 )
                 return_vars = []
             elif (
-                call.func.id == event.__name__
+                func == event
                 and len(call.args) > 0
                 and isinstance(call.args[0], ast.Call)
             ):
@@ -769,7 +775,7 @@ class SFNScope:
                     call.args[0], result_path=result_path, invoke_event_=True
                 )
             elif (
-                call.func.id == await_token.__name__
+                func == await_token
                 and len(call.args) >= 2
                 and isinstance(call.args[0], ast.Call)
             ):
@@ -831,12 +837,11 @@ class SFNScope:
                 )
                 return_vars = list(func.output.keys())
                 result_prefix = ".Output"
-            elif call.func.id in service_operations:
-                method = service_operations[call.func.id]
-                invoke = method.builder(
-                    self.cdk_stack, self.state_name(method.step_name), **params
+            elif func in service_operations:
+                invoke = func.builder(
+                    self.cdk_stack, self.state_name(func.step_name), **params
                 )
-                return_vars = method.return_vars
+                return_vars = func.return_vars
                 result_prefix = ""
             else:
                 raise Exception(
@@ -1076,7 +1081,7 @@ class SFNScope:
             and isinstance(arg_value.value, ast.Name)
             and arg_value.value.id == "self"
         ):
-            s = self.fts.local_values.get(arg_value.value.id)
+            s = self.fts.get_frame_value(arg_value.value.id)
             var = s.__getattribute__(arg_value.attr)
             return var
         elif isinstance(arg_value, ast.Call) and (

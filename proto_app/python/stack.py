@@ -138,7 +138,7 @@ class ProtoAppStack(Stack):
         base_lambda.create_construct()
         high_memory_lambda.create_construct()
 
-        @state_machine(self, "pysfn-simple", locals())
+        @state_machine(self, "pysfn-simple")
         def simple(str_value: str, list_value: List[int] = None, option: bool = False):
             uri1: Union[str, None] = None
             uri2: Union[str, None] = None
@@ -163,7 +163,7 @@ class ProtoAppStack(Stack):
                 option,
             )
 
-        @state_machine(self, "pysfn-basic", locals())
+        @state_machine(self, "pysfn-basic")
         def basic(str_value: str, list_value: List[int] = None, option: bool = False):
             uri1: Union[str, None] = None
             uri2: Union[str, None] = None
@@ -193,7 +193,7 @@ class ProtoAppStack(Stack):
                 option,
             )
 
-        @state_machine(self, "pysfn-larger", locals())
+        @state_machine(self, "pysfn-larger")
         def larger(uri1: str, uri2: Union[str, None] = None):
             out_uri1: Union[str, None] = None
             out_uri4: Union[str, None] = None
@@ -228,7 +228,7 @@ class ProtoAppStack(Stack):
                 message = "Processing failed"
                 return None, None, None, None, None, None, message
 
-        @state_machine(self, "pysfn-larger-variant", locals())
+        @state_machine(self, "pysfn-larger-variant")
         def larger_variant(uri1: str, uri2: Union[str, None] = None):
             successful_uris: List[str] = []
             failed_uris: List[str] = []
@@ -297,7 +297,7 @@ class ProtoAppStack(Stack):
                 message = "Processing failed"
                 return None, None, None, None, None, None, message, len(successful_uris)
 
-        @state_machine(self, "pysfn-mapping", locals())
+        @state_machine(self, "pysfn-mapping")
         def mapping(uri: str, count: int = 5):
             values = step10(uri, count)
             r = range(10)
@@ -319,12 +319,12 @@ class ProtoAppStack(Stack):
             # results2 = [step12(v) for v in values]
             return results, results2, r_vals
 
-        @state_machine(self, "pysfn-batch", locals())
+        @state_machine(self, "pysfn-batch")
         def batch(uris: List[str]):
             for uri in uris:
                 larger_variant(uri)
 
-        @state_machine(self, "pysfn-callback", locals())
+        @state_machine(self, "pysfn-callback")
         def token_callback(str_value: str):
             # Simply trigger asynchronously
             event(delayed_step(str_value))
@@ -366,7 +366,7 @@ class ProtoAppStack(Stack):
 
             return result, error
 
-        @state_machine(self, "pysfn-s3", locals())
+        @state_machine(self, "pysfn-s3")
         def s3_read_write(str_value: str, option: bool = False):
             (
                 available,
@@ -387,7 +387,7 @@ class ProtoAppStack(Stack):
             etag = s3_write_json(obj, self.bucket, key)
             read_obj, last_modified, read_etag = s3_read_json(self.bucket, key)
 
-        @state_machine(self, "pysfn-sqs", locals())
+        @state_machine(self, "pysfn-sqs")
         def sqs_send_receive(message: typing.Union[str, dict]):
             message_id = sqs_send_message(self.queue, message)
             sleep(5)
@@ -395,7 +395,7 @@ class ProtoAppStack(Stack):
             for message in messages:
                 sqs_delete_message(self.queue, message["ReceiptHandle"])
 
-        # @state_machine(self, "pysfn-dynamo", locals())
+        # @state_machine(self, "pysfn-dynamo")
         def dynamo_read_write(str_value: str, option: bool = False):
             (
                 available,

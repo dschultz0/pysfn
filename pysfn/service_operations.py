@@ -188,7 +188,7 @@ def dynamo_update_item(table: ddb.Table, key: dict, attribute_updates: dict):
     pass
 
 
-service_operations = {}
+service_operations = []
 
 
 def register_operation(
@@ -200,7 +200,7 @@ def register_operation(
     method.builder = builder
     method.step_name = step_name
     method.return_vars = return_vars
-    service_operations[method.__name__] = method
+    service_operations.append(method)
 
 
 register_operation(s3_write_json, build_s3_write_json_step, "S3 Write JSON", ["ETag"])
