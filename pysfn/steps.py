@@ -6,7 +6,8 @@ import typing
 import time
 
 from .function import gather_function_attributes, FunctionAttributes
-from dataclasses import dataclass
+import dataclasses
+from dataclasses import dataclass, is_dataclass, fields
 from types import BuiltinFunctionType, FrameType
 from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional, Type
 
@@ -158,6 +159,8 @@ class FunctionToSteps:
 
 
 class SFNScope:
+    # TODO: Fix all of the function call handling which largely ignores keyword args
+
     def __init__(self, fts: FunctionToSteps):
         self.fts = fts
         self.cdk_stack = fts.cdk_stack
@@ -233,10 +236,45 @@ class SFNScope:
         if isinstance(stmt, ast.AnnAssign) or isinstance(stmt, ast.Assign):
             # if isinstance(stmt.value, ast.Constant):
             #    return self.handle_assign_value(stmt)
-            if isinstance(stmt.value, ast.Call) and isinstance(
-                stmt.value.func, ast.Name
-            ):
-                return self.handle_call_function(stmt.value, stmt)
+            # TODO: Revisit this hack for dataclasses
+            if isinstance(stmt.value, ast.Call):
+                call = stmt.value
+                if isinstance(call.func, ast.Name):
+                    func = self.fts.get_frame_value(call.func.id)
+
+                    if is_dataclass(func):
+                        dc_fields = fields(func)
+                        # print(f"Dataclass {func}")
+                        # print("fields:")
+                        # print([f.name for f in dc_fields])
+                        if len(call.args) == 1:
+                            arg = call.args[0]
+                            if isinstance(arg, ast.Starred):
+                                if isinstance(arg.value, ast.Call):
+                                    return self.handle_call_function(
+                                        arg.value, stmt, func
+                                    )
+                        value = self.build_dataclass_default_structure(func)
+                        for key, val in zip(value.keys(), call.args):
+                            value[key] = val
+                        for key in call.keywords:
+                            value[key.arg] = self.generate_value_repr(key.value)
+                        self.validate_dataclass_values(value)
+                        # print("Mapped object")
+                        # print(value)
+                        # TODO Fix this hack that assumes a non-annotated assignment
+                        target = stmt.targets[0].id
+                        # print(self.build_register_assignment({target: value}))
+                        assign = sfn.Pass(
+                            self.cdk_stack,
+                            self.state_name(f"Assign {target}"),
+                            input_path="$.register",
+                            result_path="$.register",
+                            parameters=self.build_register_assignment({target: value}),
+                        )
+                        return [assign], assign.next
+                    else:
+                        return self.handle_call_function(call, stmt)
             if isinstance(stmt.value, ast.ListComp):
                 return self.handle_list_comp(stmt)
             else:
@@ -627,17 +665,28 @@ class SFNScope:
                     f"Unexpected assignment target of type {type(stmt.target)}"
                 )
         else:
-            if len(stmt.targets) == 1 and isinstance(stmt.targets[0], ast.Name):
-                var_name = stmt.targets[0].id
-            elif (
-                isinstance(stmt.targets[0], ast.Subscript)
-                and isinstance(stmt.targets[0].value, ast.Name)
-                and isinstance(stmt.targets[0].slice, ast.Constant)
-            ):
-                var_name = stmt.targets[0].value.id
-                sub_target = stmt.targets[0].slice.value
+            if len(stmt.targets) == 1:
+                target = stmt.targets[0]
+                if isinstance(target, ast.Name):
+                    var_name = target.id
+                elif (
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.value, ast.Name)
+                    and isinstance(target.slice, ast.Constant)
+                ):
+                    var_name = target.value.id
+                    sub_target = target.slice.value
+
+                # dataclass attribute assignment
+                elif isinstance(target, ast.Attribute) and isinstance(
+                    target.value, ast.Name
+                ):
+                    var_name = target.value.id
+                    sub_target = target.attr
+                else:
+                    raise Exception("Unexpected assignment")
             else:
-                raise Exception("Unexpected assignment")
+                raise Exception("More targets than expected")
         if sub_target:
             prep = sfn.Pass(
                 self.cdk_stack,
@@ -854,7 +903,10 @@ class SFNScope:
             )
 
     def handle_call_function(
-        self, call: ast.Call, assign: Union[ast.Assign, ast.AnnAssign] = None,
+        self,
+        call: ast.Call,
+        assign: Union[ast.Assign, ast.AnnAssign] = None,
+        dataclass_=None,
     ) -> (List[sfn.IChainable], Callable):
         if self._is_intrinsic_function(call):
             if not assign:
@@ -904,24 +956,45 @@ class SFNScope:
                     raise Exception(
                         f"Unexpected result target of type {type(assign.target)}"
                     )
-                result_params = {
-                    v: JsonPath.string_at(f"$.out{result_prefix}.{r}")
-                    for v, r in zip(result_targets, return_vars)
-                }
-                if len(result_params) < len(result_targets):
-                    raise Exception(
-                        f"Unable to map all response targets to return values for {name}"
+                if dataclass_:
+                    # print("dataclass assignment")
+                    value = self.build_dataclass_default_structure(dataclass_)
+                    for key, val in zip(value.keys(), return_vars):
+                        value[key] = JsonPath.string_at(f"$.out.{val}")
+                    self.validate_dataclass_values(value)
+                    # print("Mapped object")
+                    # print(value)
+                    # TODO Fix this hack that assumes a non-annotated assignment
+                    # print(self.build_register_assignment({target.id: value}))
+                    register = sfn.Pass(
+                        self.cdk_stack,
+                        self.state_name(f"Register {call.func.id}"),
+                        input_path="$.register",
+                        result_path="$.register",
+                        parameters=self.build_register_assignment({target.id: value}),
                     )
-                register = sfn.Pass(
-                    self.cdk_stack,
-                    self.state_name(f"Register {call.func.id}"),
-                    input_path="$.register",
-                    result_path="$.register",
-                    parameters=self.build_register_assignment(result_params),
-                )
-                invoke.next(register)
-                chain.append(register)
-                next_ = register.next
+                    invoke.next(register)
+                    chain.append(register)
+                    next_ = register.next
+                else:
+                    result_params = {
+                        v: JsonPath.string_at(f"$.out{result_prefix}.{r}")
+                        for v, r in zip(result_targets, return_vars)
+                    }
+                    if len(result_params) < len(result_targets):
+                        raise Exception(
+                            f"Unable to map all response targets to return values for {name}"
+                        )
+                    register = sfn.Pass(
+                        self.cdk_stack,
+                        self.state_name(f"Register {call.func.id}"),
+                        input_path="$.register",
+                        result_path="$.register",
+                        parameters=self.build_register_assignment(result_params),
+                    )
+                    invoke.next(register)
+                    chain.append(register)
+                    next_ = register.next
 
             return chain, next_
 
@@ -1029,7 +1102,8 @@ class SFNScope:
             expr = f"$.{arg_value.id}"
             return JsonPath.string_at(expr) if gen_jsonpath else expr
         elif isinstance(arg_value, ast.Constant):
-            return arg_value.value
+            # TODO: Investigate this more, it appears that values of None are getting dropped altogether rather than using null
+            return arg_value.value if arg_value.value is not None else ""
         elif isinstance(arg_value, ast.List):
             expr = [self.generate_value_repr(val, False) for val in arg_value.elts]
             return JsonPath.array(*expr) if gen_jsonpath else expr
@@ -1097,6 +1171,27 @@ class SFNScope:
         else:
             print(ast.dump(arg_value, indent=2))
             raise Exception(f"Unexpected argument: {ast.dump(arg_value)}")
+
+    def build_dataclass_default_structure(self, dc):
+        dc_fields = dataclasses.fields(dc)
+        value = {}
+        for f in dc_fields:
+            if f.default is dataclasses.MISSING:
+                if f.default_factory is dataclasses.MISSING:
+                    value[f.name] = Ellipsis
+                elif f.default_factory is list:
+                    value[f.name] = []
+                else:
+                    raise Exception("Unsupported dataclass default factory")
+            else:
+                value[f.name] = self.generate_value_repr(ast.Constant(f.default))
+        return value
+
+    @staticmethod
+    def validate_dataclass_values(values: Dict):
+        for key, value in values.items():
+            if value is Ellipsis:
+                raise Exception(f"Missing required value for attribute: {key}")
 
 
 class MapScope(SFNScope):

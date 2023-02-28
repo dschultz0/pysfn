@@ -2,6 +2,7 @@ import os
 import typing
 from time import sleep
 from typing import List, Union
+from dataclasses import dataclass
 from aws_cdk import (
     aws_iam as iam,
     aws_lambda as lmbda,
@@ -34,6 +35,14 @@ from pysfn.steps import (
     state_entered_time,
 )
 from . import operations
+
+
+@dataclass
+class Result:
+    available: bool = None
+    list_value: List[int] = None
+    uri: str = None
+    message: str = None
 
 
 class ProtoAppStack(Stack):
@@ -416,3 +425,10 @@ class ProtoAppStack(Stack):
             dynamo_write_item(self.table, item)
             key = {"id": item["id"]}
             dynamo_read_item(self.table, key)
+
+        @state_machine(self, "pysfn-dataclass")
+        def step_dataclass(str_value: str, list_value: List[int] = None):
+            result = Result(*step2(str_value, list_value))
+            result2 = Result(message="Woah")
+            result.message = "success"
+            return result
