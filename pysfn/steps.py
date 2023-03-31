@@ -414,6 +414,7 @@ class SFNScope:
         # TODO: Support callable iterator
         max_concurrency = 1
         iterator_step = None
+        has_index = False
 
         # if the iterator is wrapped in a 'concurrent' function, capture the parameter as the concurrency for the map
         if (
@@ -438,6 +439,17 @@ class SFNScope:
             )
             iter_var = iterator.func.id
             items_path = f"$.iter.{iter_var}"
+        elif (
+            isinstance(iterator, ast.Call)
+            and isinstance(iterator.func, ast.Name)
+            and iterator.func.id == "enumerate"
+        ):
+            if len(iterator.args) == 1 and isinstance(iterator.args[0], ast.Name):
+                iter_var = iterator.args[0].id
+                items_path = f"$.register.{iter_var}"
+                has_index = True
+            else:
+                raise Exception("enumerate can only be used with variable values")
         elif isinstance(iterator, ast.Call) and isinstance(iterator.func, ast.Name):
             (
                 iterator_step,
@@ -454,31 +466,51 @@ class SFNScope:
             items_path = f"$.register.{iter_var}"
         else:
             raise Exception("Unsupported for-loop iterator, variables only")
-        return iter_var, items_path, iterator_step, max_concurrency
+        return iter_var, items_path, iterator_step, max_concurrency, has_index
 
     def handle_for(self, stmt: ast.For):
-        iter_var, items_path, iterator_step, max_concurrency = self._get_iterator(
-            stmt.iter
-        )
-        if not isinstance(stmt.target, ast.Name):
+        # print(ast.dump(stmt))
+        # print()
+        (
+            iter_var,
+            items_path,
+            iterator_step,
+            max_concurrency,
+            has_index,
+        ) = self._get_iterator(stmt.iter)
+        index_name = None
+        if (
+            isinstance(stmt.target, ast.Tuple)
+            and len(stmt.target.elts) == 2
+            and has_index
+        ):
+            index_name = stmt.target.elts[0].id
+            target_name = stmt.target.elts[1].id
+        elif isinstance(stmt.target, ast.Name):
+            target_name = stmt.target.id
+        else:
             raise Exception("Unsupported for-loop target, variables only")
+
+        map_parameters = {
+            "register.$": f"$.register",
+            f"{target_name}.$": "$$.Map.Item.Value",
+        }
+        if index_name:
+            map_parameters[f"{index_name}.$"] = "$$.Map.Item.Index"
 
         map_state = sfn.Map(
             self.cdk_stack,
             self.state_name(f"For {iter_var}"),
             max_concurrency=max_concurrency,
             items_path=items_path,
-            parameters={
-                "register.$": f"$.register",
-                f"{stmt.target.id}.$": "$$.Map.Item.Value",
-            },
+            parameters=map_parameters,
             result_path="$.register.loopResult",
         )
 
         # Create a scope for the for loop contents and build the contained steps
         # Also build an entry step to capture the iterator target
         map_scope = MapScope(self)
-        entry_step = map_scope.build_entry_step(stmt.target.id)
+        entry_step = map_scope.build_entry_step(target_name, index_name)
         chain, map_next_ = map_scope.handle_body(stmt.body)
         entry_step.next(chain[0])
         map_state.iterator(entry_step)
@@ -1222,14 +1254,15 @@ class MapScope(SFNScope):
     def _updated_var(self, var: str):
         self._updated_vars.add(var)
 
-    def build_entry_step(self, entry_var: str):
+    def build_entry_step(self, entry_var: str, index_var: str = None):
+        values = {entry_var: JsonPath.string_at(f"$.{entry_var}")}
+        if index_var:
+            values[index_var] = JsonPath.string_at(f"$.{index_var}")
         return sfn.Pass(
             self.cdk_stack,
             self.state_name("Register loop value"),
             result_path="$.register",
-            parameters=self.build_register_assignment(
-                {entry_var: JsonPath.string_at(f"$.{entry_var}")}, "register."
-            ),
+            parameters=self.build_register_assignment(values, "register."),
         )
 
     @property
