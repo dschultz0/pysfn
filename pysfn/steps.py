@@ -183,7 +183,9 @@ class SFNScope:
         next_ = advance(start.next, c, n)
         return start, next_
 
-    def build_register_assignment(self, values: Dict, register_path: str = ""):
+    def build_register_assignment(
+        self, values: Dict, register_path: str = "", value_types=None
+    ):
         params = values.copy()
         for k, v in params.items():
             self._updated_var(k)
@@ -197,7 +199,12 @@ class SFNScope:
         for key in values.keys():
             if key not in self.variables:
                 # TODO: Assign the type of the value
-                self.add_var(key)
+                self.add_var(
+                    key,
+                    var_type=value_types.get(key, typing.Any)
+                    if value_types
+                    else typing.Any,
+                )
 
         params = {update_param_name(k, v): v for k, v in params.items()}
         return params
@@ -650,9 +657,13 @@ class SFNScope:
         self, stmt: Union[ast.AnnAssign, ast.Assign]
     ) -> (List[sfn.IChainable], Callable):
         sub_target = None
+        assignment_type = typing.Any
         if isinstance(stmt, ast.AnnAssign):
             if isinstance(stmt.target, ast.Name):
                 var_name = stmt.target.id
+                # TODO: Handle subscripted annotations such as typing.List
+                if isinstance(stmt.annotation, ast.Name):
+                    assignment_type = self.fts.get_frame_value(stmt.annotation.id)
             elif (
                 isinstance(stmt.target, ast.Subscript)
                 and isinstance(stmt.target.value, ast.Name)
@@ -702,7 +713,8 @@ class SFNScope:
                 result_path="$.register",
                 parameters=self.build_register_assignment(
                     # {f"{var_name}": JsonPath.json_merge(f"$.{var_name}", "$.itm")}
-                    {f"{var_name}": f"States.JsonMerge($.{var_name}, $.itm, false)"}
+                    {f"{var_name}": f"States.JsonMerge($.{var_name}, $.itm, false)"},
+                    value_types={var_name: assignment_type},
                 ),
             )
             prep.next(assign)
@@ -714,7 +726,9 @@ class SFNScope:
                 self.state_name(f"Assign {var_name}"),
                 input_path="$.register",
                 result_path="$.register",
-                parameters=self.build_register_assignment({var_name: value}),
+                parameters=self.build_register_assignment(
+                    {var_name: value}, value_types={var_name: assignment_type}
+                ),
             )
             return [assign], assign.next
 
