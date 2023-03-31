@@ -21,9 +21,11 @@ def build_s3_write_json_step(
     stack,
     id_: str,
     obj: typing.Union[dict, list, str],
-    bucket: typing.Union[str, s3.IBucket],
+    bucket: typing.Union[str, s3.Bucket],
     key: typing.Union[str, JsonPath],
 ):
+    if not isinstance(bucket, str):
+        bucket = bucket.bucket_name
     return tasks.CallAwsService(
         stack,
         id_,
@@ -34,9 +36,7 @@ def build_s3_write_json_step(
         result_path="$.register.out",
         result_selector={"ETag.$": "States.StringToJson($.ETag)"},
         parameters={
-            "Bucket": JsonPath.string_at(bucket)
-            if isinstance(bucket, str)
-            else bucket.bucket_name,
+            "Bucket": bucket,
             "Key": JsonPath.string_at(key) if not key.startswith("${") else key,
             "Body": JsonPath.string_at(obj),
             "ContentType": "application/json",
@@ -79,7 +79,7 @@ def build_s3_read_json_step(
 
 
 def sqs_send_message(
-    queue: sqs.IQueue,
+    queue: typing.Union[sqs.Queue, str],
     message: typing.Union[typing.Dict, str],
     message_deduplication_id: str = None,
     message_group_id: str = None,
@@ -90,7 +90,7 @@ def sqs_send_message(
 def build_sqs_send_message_step(
     stack,
     id_: str,
-    queue: sqs.IQueue,
+    queue: typing.Union[sqs.Queue, str],
     message: typing.Union[typing.Dict, str],
     message_deduplication_id: str = None,
     message_group_id: str = None,
