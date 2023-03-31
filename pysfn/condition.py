@@ -32,15 +32,7 @@ def build_condition(test):
         )
     elif isinstance(test, ast.Compare):
         # Assuming that the variable is on the left side as well
-        var_name = None
-        if isinstance(test.left, ast.Name):
-            var_name = test.left.id
-        elif (
-            isinstance(test.left, ast.Subscript)
-            and isinstance(test.left.value, ast.Name)
-            and isinstance(test.left.slice, ast.Constant)
-        ):
-            var_name = f"{test.left.value.id}.{test.left.slice.value}"
+        var_name = get_var_name(test.left)
         if var_name and len(test.ops) == 1 and len(test.comparators) == 1:
             comparator = test.comparators[0]
             if isinstance(comparator, ast.Constant):
@@ -54,6 +46,23 @@ def build_condition(test):
                         comp_op(f"$.register.{var_name}", comparator.value),
                         f"If {var_name}{label}'{comparator.value}'",
                     )
+    elif isinstance(test, ast.Call) and isinstance(test.func, ast.Attribute):
+        attr = test.func
+        if attr.attr == "startswith":
+            var_name = get_var_name(attr.value)
+            starts_with = None
+            if len(test.args) == 1:
+                arg = test.args[0]
+                if isinstance(arg, ast.Constant):
+                    starts_with = f"{arg.value}*"
+            if var_name and starts_with:
+                param = f"$.register.{var_name}"
+                condition = sfn.Condition.and_(
+                    sfn.Condition.is_present(param),
+                    sfn.Condition.is_string(param),
+                    sfn.Condition.string_matches(param, starts_with),
+                )
+                return condition, f"If {var_name} starts with {starts_with}"
 
     raise Exception(f"Unhandled test: {ast.dump(test)}")
 
@@ -94,3 +103,16 @@ def if_value(name, var_type=None):
                 sfn.Condition.is_present(f"{param}[0]"),
             ),
         )
+
+
+def get_var_name(value: ast.expr):
+    var_name = None
+    if isinstance(value, ast.Name):
+        var_name = value.id
+    elif (
+        isinstance(value, ast.Subscript)
+        and isinstance(value.value, ast.Name)
+        and isinstance(value.slice, ast.Constant)
+    ):
+        var_name = f"{value.value.id}.{value.slice.value}"
+    return var_name
