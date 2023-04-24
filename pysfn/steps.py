@@ -1464,7 +1464,7 @@ def write_definition_json(name, start):
     with open(pathlib.Path("build", f"{name}.json"), "w") as fp:
         states = sfn.State.find_reachable_states(start, include_error_handlers=True)
         states.sort(
-            key=lambda state: int(state.id.split("[")[1].split("]")[0].split(":")[1])
+            key=lambda s: int(s.id[s.id.rindex("[") :].split("]")[0].split(":")[1])
         )
         json.dump(
             {"StartAt": start.id, "States": {s.id: s.to_state_json() for s in states},},
