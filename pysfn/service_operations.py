@@ -5,6 +5,7 @@ from aws_cdk import (
     aws_stepfunctions_tasks as tasks,
     aws_s3 as s3,
     aws_sqs as sqs,
+    aws_iam as iam,
 )
 from aws_cdk.aws_stepfunctions import JsonPath
 
@@ -188,6 +189,56 @@ def dynamo_update_item(table: ddb.Table, key: dict, attribute_updates: dict):
     pass
 
 
+def dynamo_export(
+    bucket: typing.Union[s3.IBucket, str], table: typing.Union[ddb.Table, str]
+) -> dict:
+    pass
+
+
+def build_dynamo_export_step(
+    stack,
+    id_: str,
+    bucket: typing.Union[s3.IBucket, str],
+    table: typing.Union[ddb.Table, str],
+):
+    return tasks.CallAwsService(
+        stack,
+        id_,
+        service="dynamodb",
+        action="exportTableToPointInTime",
+        iam_resources=["*"],
+        input_path="$.register",
+        result_path="$.register.out",
+        parameters={
+            "S3Bucket": JsonPath.string_at(bucket)
+            if isinstance(bucket, str)
+            else bucket.bucket_name,
+            "TableArn": table.table_arn
+            if isinstance(table, ddb.Table)
+            else JsonPath.string_at(table),
+        },
+    )
+
+
+def dynamo_describe_export(export_arn: str) -> dict:
+    pass
+
+
+def build_dynamo_describe_export(
+    stack, id_: str, export_arn: str,
+):
+    return tasks.CallAwsService(
+        stack,
+        id_,
+        service="dynamodb",
+        action="describeExport",
+        iam_resources=["*"],
+        input_path="$.register",
+        result_path="$.register.out",
+        parameters={"ExportArn": JsonPath.string_at(export_arn)},
+    )
+
+
 service_operations = []
 
 
@@ -196,10 +247,12 @@ def register_operation(
     builder: typing.Callable,
     step_name: str,
     return_vars: typing.List[str],
+    additional_policies: typing.Optional[typing.List[iam.PolicyStatement]] = None,
 ):
     method.builder = builder
     method.step_name = step_name
     method.return_vars = return_vars
+    method.additional_policies = additional_policies
     service_operations.append(method)
 
 
@@ -221,4 +274,17 @@ register_operation(
 )
 register_operation(
     sqs_delete_message, build_sqs_delete_message_step, "Delete SQS Message", [],
+)
+register_operation(
+    dynamo_export,
+    build_dynamo_export_step,
+    "Export Table",
+    ["ExportDescription"],
+    [iam.PolicyStatement(actions=["s3:PutObject"], resources=["*"])],
+)
+register_operation(
+    dynamo_describe_export,
+    build_dynamo_describe_export,
+    "Describe Table Export",
+    ["ExportDescription"],
 )
