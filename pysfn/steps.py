@@ -454,7 +454,10 @@ class SFNScope:
             and isinstance(arg.value, ast.Name)
             and isinstance(arg.slice, ast.Constant)
         ):
-            return f"$.{var_path}{arg.value.id}[{arg.slice.value}]"
+            if isinstance(arg.slice.value, int):
+                return f"$.{var_path}{arg.value.id}[{arg.slice.value}]"
+            else:
+                return f"$.{var_path}{arg.value.id}.{arg.slice.value}"
         else:
             raise Exception("Args must be Name or Constant")
 
