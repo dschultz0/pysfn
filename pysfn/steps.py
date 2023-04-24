@@ -1102,6 +1102,8 @@ class SFNScope:
             )
             chain = [invoke]
             next_ = invoke.next
+            context_target = None
+            CONTEXT_TARGET_NAMES = {"__execution_arn": "ExecutionArn"}
 
             if assign:
                 # Get the result variable names
@@ -1116,6 +1118,9 @@ class SFNScope:
                     isinstance(t, ast.Name) for t in target.elts
                 ):
                     result_targets = [n.id for n in target.elts]
+                    if result_targets[0] in CONTEXT_TARGET_NAMES:
+                        context_target = result_targets[0]
+                        result_targets = result_targets[1:]
                 else:
                     raise Exception(
                         f"Unexpected result target of type {type(assign.target)}"
@@ -1145,6 +1150,10 @@ class SFNScope:
                         v: JsonPath.string_at(f"$.out{result_prefix}.{r}")
                         for v, r in zip(result_targets, return_vars)
                     }
+                    if context_target:
+                        result_params[context_target] = JsonPath.string_at(
+                            f"$.out.{CONTEXT_TARGET_NAMES[context_target]}"
+                        )
                     if len(result_params) < len(result_targets):
                         raise Exception(
                             f"Unable to map all response targets to return values for {name}"
