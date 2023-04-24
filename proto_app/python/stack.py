@@ -92,7 +92,7 @@ class ProtoAppStack(Stack):
             role=self.lambda_role,
             runtime=PythonLambda.PYTHON_3_9,
             timeout_minutes=5,
-            memory_mb=1,
+            memory_gb=1,
             # layers=["arn:aws:lambda:us-east-1:999999999999:layer:Utilities:2"],
             environment=None,
         )
@@ -103,7 +103,7 @@ class ProtoAppStack(Stack):
             role=self.lambda_role,
             runtime=PythonLambda.PYTHON_3_9,
             timeout_minutes=15,
-            memory_mb=10,
+            memory_gb=10,
             environment={"NLTK_DATA": "/opt/nltk"},
         )
 

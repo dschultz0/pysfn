@@ -64,7 +64,7 @@ class PythonLambda:
         role,
         runtime,
         timeout_minutes,
-        memory_mb,
+        memory_gb,
         layers=None,
         environment=None,
         name=None,
@@ -76,7 +76,7 @@ class PythonLambda:
         self.role = role
         self.runtime = runtime
         self.timeout_minutes = timeout_minutes
-        self.memory_size = int(memory_mb * 1024)
+        self.memory_size = int(memory_gb * 1024)
         self.layers = (
             [resolve_layer(layer, stack) for layer in layers] if layers else None
         )
