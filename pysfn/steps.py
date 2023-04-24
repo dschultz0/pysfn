@@ -732,6 +732,13 @@ class SFNScope:
         elif isinstance(arg, ast.Constant):
             value = arg.value
             path_to_add = arg.value
+        elif (
+            isinstance(arg, ast.Subscript)
+            and isinstance(arg.value, ast.Name)
+            and isinstance(arg.slice, ast.Constant)
+        ):
+            value = f"{arg.value.id}.{arg.slice.value}"
+            path_to_add = f"$.register.{value}"
         else:
             raise Exception(f"Unexpected type {type(arg)} for list append")
         list_step = sfn.Pass(
