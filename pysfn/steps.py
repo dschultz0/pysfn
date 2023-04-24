@@ -829,6 +829,44 @@ class SFNScope:
             )
             prep.next(assign)
             return [prep, assign], assign.next
+
+        # Handling for array addition
+        elif isinstance(stmt.value, ast.BinOp) and isinstance(stmt.value.op, ast.Add):
+            op = stmt.value
+            if isinstance(op.left, ast.Name):
+                left_name = op.left.id
+                left_type = self.variables.get(op.left.id)
+            else:
+                raise Exception("Unexpected left value in value addition")
+            if isinstance(op.right, ast.Name):
+                right_name = op.right.id
+                right_type = self.variables.get(op.right.id)
+            else:
+                raise Exception("Unexpected right value in value addition")
+            if left_type == typing.List and right_type == typing.List:
+                list_step = sfn.Pass(
+                    self.cdk_stack,
+                    self.state_name(f"Add {left_name} and {right_name}"),
+                    result_path="$.meta",
+                    parameters={
+                        "arrayConcat": JsonPath.string_at(
+                            f"States.Array($.register.{left_name}, $.register.{right_name})"
+                        )
+                    },
+                )
+                flatten_step = sfn.Pass(
+                    self.cdk_stack,
+                    self.state_name(f"Flatten {var_name}"),
+                    result_path="$.register",
+                    parameters=self.build_register_assignment(
+                        {var_name: JsonPath.string_at("$.meta.arrayConcat[*][*]")},
+                        "register.",
+                    ),
+                )
+                list_step.next(flatten_step)
+                return [list_step, flatten_step], flatten_step.next
+            else:
+                raise Exception("Addition is currently only supported for arrays")
         else:
             value = self.generate_value_repr(stmt.value)
             assign = sfn.Pass(
