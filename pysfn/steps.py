@@ -1428,7 +1428,8 @@ def advance(
             chain = chain[0]
         if isinstance(next_, list):
             for i in flatten(next_):
-                i(chain)
+                if i and callable(i):
+                    i(chain)
         else:
             next_(chain)
         return new_next
