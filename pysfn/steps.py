@@ -92,7 +92,7 @@ def state_machine(
                 state_machine_type=sfn.StateMachineType.EXPRESS
                 if express
                 else sfn.StateMachineType.STANDARD,
-                definition=fts.build_sfn_definition(),
+                definition=fts.build_sfn_definition()[0],
             )
             func.output = func_attrs.output
             if fts.additional_policies:
@@ -156,7 +156,7 @@ class FunctionToSteps:
         advance(next_, c, n)
 
         write_definition_json(self.func.__name__, start)
-        return start
+        return start, next_
 
     def get_frame_value(self, name):
         return self.local_values.get(name, self.global_values.get(name))
