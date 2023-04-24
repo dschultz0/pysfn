@@ -1179,6 +1179,14 @@ class SFNScope:
         elif isinstance(value, ast.Call) and self._is_intrinsic_function(value):
             val, name = self._intrinsic_function(value)
             return val
+        elif (
+            isinstance(value, ast.Subscript)
+            and isinstance(value.value, ast.Name)
+            and isinstance(value.slice, ast.Constant)
+        ):
+            return JsonPath.string_at(
+                f"$.register.{value.value.id}.{value.slice.value}"
+            )
         else:
             raise Exception(f"Unanticipated return type: {value}")
 
