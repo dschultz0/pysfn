@@ -106,13 +106,19 @@ def if_value(name, var_type=None):
 
 
 def get_var_name(value: ast.expr):
-    var_name = None
     if isinstance(value, ast.Name):
-        var_name = value.id
-    elif (
-        isinstance(value, ast.Subscript)
-        and isinstance(value.value, ast.Name)
-        and isinstance(value.slice, ast.Constant)
-    ):
-        var_name = f"{value.value.id}.{value.slice.value}"
-    return var_name
+        return value.id
+    elif isinstance(value, ast.Subscript):
+        # TODO: Build an approach that supports nested subscript recursively
+        if isinstance(value.value, ast.Name) and isinstance(value.slice, ast.Constant):
+            return f"{value.value.id}.{value.slice.value}"
+        elif (
+            isinstance(value.value, ast.Subscript)
+            and isinstance(value.slice, ast.Constant)
+            and isinstance(value.value.value, ast.Name)
+            and isinstance(value.value.slice, ast.Constant)
+        ):
+            return (
+                f"{value.value.value.id}.{value.value.slice.value}.{value.slice.value}"
+            )
+    raise Exception("Unhandled var name")
