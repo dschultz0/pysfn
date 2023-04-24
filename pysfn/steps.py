@@ -315,6 +315,8 @@ class SFNScope:
                     pass
         elif isinstance(stmt, ast.With):
             return self.handle_with(stmt)
+        elif isinstance(stmt, ast.While):
+            return self.handle_while(stmt)
         elif isinstance(stmt, ast.Try):
             return self.handle_try(stmt)
         elif isinstance(stmt, ast.For):
@@ -514,6 +516,25 @@ class SFNScope:
         else:
             raise Exception("Unsupported for-loop iterator, variables only")
         return iter_var, items_path, iterator_step, max_concurrency, has_index
+
+    def handle_while(self, stmt: ast.While):
+        condition, name = build_condition(stmt.test)
+        choice = sfn.Choice(
+            self.cdk_stack, self.state_name(name.replace("If", "While"))
+        )
+
+        def if_next(step):
+            choice.when(condition, step)
+
+        if_c, if_n = ChildScope(self).handle_body(stmt.body)
+        if stmt.orelse:
+            raise Exception("While else isn't currently supported")
+        if_n = advance(if_next, if_c, if_n)
+        advance(if_n, choice, None)
+        chain = [choice]
+        if if_c:
+            chain.extend(if_c)
+        return chain, [choice.otherwise]
 
     def handle_for(self, stmt: ast.For):
         # print(ast.dump(stmt))
