@@ -5,6 +5,10 @@ from typing import Dict, Tuple, Callable
 # Limited comparisons types for now...
 comparator_map: Dict[Tuple, Tuple] = {
     (ast.Eq, str): (sfn.Condition.string_equals, "=="),
+    (ast.NotEq, str): (
+        lambda x, y: sfn.Condition.not_(sfn.Condition.string_equals(x, y)),
+        "!=",
+    ),
     (ast.Eq, int): (sfn.Condition.number_equals, "=="),
     (ast.Gt, int): (sfn.Condition.number_greater_than, ">"),
     (ast.Gt, float): (sfn.Condition.number_greater_than, ">"),
@@ -63,6 +67,16 @@ def build_condition(test) -> (sfn.Condition, str):
                     sfn.Condition.string_matches(param, starts_with),
                 )
                 return condition, f"If {var_name} starts with {starts_with}"
+    elif isinstance(test, ast.BoolOp):
+        conditions = [build_condition(t) for t in test.values]
+        if isinstance(test.op, ast.And):
+            name = " and ".join([c[1] for c in conditions])
+            conditions = [c[0] for c in conditions]
+            return sfn.Condition.and_(*conditions), name
+    elif isinstance(test, ast.UnaryOp):
+        condition, name = build_condition(test.operand)
+        if isinstance(test.op, ast.Not):
+            return sfn.Condition.not_(condition), "Not " + name
 
     raise Exception(f"Unhandled test: {ast.dump(test)}")
 
