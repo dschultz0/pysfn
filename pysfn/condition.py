@@ -13,7 +13,7 @@ comparator_map: Dict[Tuple, Tuple] = {
 }
 
 
-def build_condition(test):
+def build_condition(test) -> (sfn.Condition, str):
     if isinstance(test, ast.Name):
         # We'll want to check the var type to create appropriate conditions based on the type if defined
         return (
