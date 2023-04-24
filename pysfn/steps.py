@@ -95,6 +95,9 @@ def state_machine(
                 definition=fts.build_sfn_definition(),
             )
             func.output = func_attrs.output
+            if fts.additional_policies:
+                for policy in fts.additional_policies:
+                    func.state_machine.add_to_role_policy(policy)
         finally:
             del stack
         return func
@@ -119,6 +122,7 @@ class FunctionToSteps:
         self.state_number = 0
         self.sfn_number = SFN_INDEX
         self.skip_pass = skip_pass
+        self.additional_policies = []
         SFN_INDEX += 1
 
         self.ast = func_attrs.tree
