@@ -98,6 +98,7 @@ def if_value(name, var_type=None):
             sfn.Condition.not_(sfn.Condition.number_equals(param, 0)),
         )
     else:
+        # TODO: Continue to iterate on this approach, if it's an empty object or array it will eval true
         return sfn.Condition.and_(
             sfn.Condition.is_present(param),
             sfn.Condition.is_not_null(param),
