@@ -298,7 +298,7 @@ class SFNScope:
                         return self.handle_call_function(call, stmt)
             if isinstance(stmt.value, ast.ListComp):
                 return self.handle_list_comp(stmt)
-            else:
+            elif stmt.value:
                 return self.handle_assign_value(stmt)
         elif isinstance(stmt, ast.If):
             return self.handle_if(stmt)
