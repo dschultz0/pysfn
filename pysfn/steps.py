@@ -983,6 +983,8 @@ class SFNScope:
                 invoke = func.builder(
                     self.cdk_stack, self.state_name(func.step_name), **params
                 )
+                if hasattr(func, "additional_policies") and func.additional_policies:
+                    self.fts.additional_policies.extend(func.additional_policies)
                 return_vars = func.return_vars
                 result_prefix = ""
             else:
