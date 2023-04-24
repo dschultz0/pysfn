@@ -64,6 +64,16 @@ def await_token(
     pass
 
 
+@dataclass
+class SFNError(Exception):
+    error: str
+    cause: str = ""
+
+    @classmethod
+    def error(cls, error: str):
+        return cls(error)
+
+
 def state_machine(
     cdk_stack: Stack,
     sfn_name: str,
@@ -319,6 +329,30 @@ class SFNScope:
             else:
                 pass_step = sfn.Pass(self.cdk_stack, self.state_name("Pass"))
                 return [pass_step], pass_step.next
+        elif isinstance(stmt, ast.Raise):
+            if (
+                isinstance(stmt.exc, ast.Call)
+                and isinstance(stmt.exc.func, ast.Name)
+                and stmt.exc.func.id == "SFNError"
+                and len(stmt.exc.args) >= 1
+            ):
+                args = [self.map_arg(a, "register.") for a in stmt.exc.args]
+                fail_step = sfn.Fail(
+                    self.cdk_stack,
+                    self.state_name("Raise error"),
+                    error=args[0],
+                    cause=args[1] if len(args) > 1 else None,
+                )
+                return [fail_step], None
+            elif isinstance(stmt.exc, ast.Name):
+                prefix = f"$.register.{stmt.exc.id}"
+                fail_step = sfn.Fail(
+                    self.cdk_stack,
+                    self.state_name("Raise error"),
+                    error=f"{prefix}.Error",
+                    cause=f"{prefix}.Cause",
+                )
+                return [fail_step], None
 
         # Treat unhandled statements as a no-op
         print(f"Unhandled {repr(stmt)}")
@@ -373,6 +407,15 @@ class SFNScope:
     ):
         if isinstance(handler.type, ast.Name) and handler.type.id == "Exception":
             return CatchHandler(["States.ALL"], chain, result_path=result_path)
+        elif (
+            isinstance(handler.type, ast.Call)
+            and isinstance(handler.type.func, ast.Attribute)
+            and isinstance(handler.type.func.value, ast.Name)
+            and handler.type.func.value.id == "SFNError"
+        ):
+            if all([isinstance(a, ast.Constant) for a in handler.type.args]):
+                args = [a.value for a in handler.type.args]
+                return CatchHandler(args, chain, result_path=result_path)
         raise Exception(f"Unhandled exception of type {handler.type}")
 
     @staticmethod
