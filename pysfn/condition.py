@@ -116,6 +116,14 @@ def if_value(name, var_type=None):
                     sfn.Condition.not_(sfn.Condition.number_equals(param, 0)),
                 ),
                 sfn.Condition.is_present(f"{param}[0]"),
+                sfn.Condition.not_(
+                    sfn.Condition.or_(
+                        sfn.Condition.is_boolean(param),
+                        sfn.Condition.is_string(param),
+                        sfn.Condition.is_numeric(param),
+                        sfn.Condition.is_present(f"{param}[0]"),
+                    )
+                ),
             ),
         )
 
