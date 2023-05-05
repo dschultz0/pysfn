@@ -10,6 +10,7 @@ import dataclasses
 from dataclasses import dataclass, is_dataclass, fields
 from types import BuiltinFunctionType, FrameType
 from typing import Dict, List, Callable, Mapping, Any, Union, Iterable, Optional, Type
+from enum import Enum
 
 from aws_cdk import (
     aws_stepfunctions as sfn,
@@ -23,6 +24,11 @@ from .condition import build_condition
 from .service_operations import service_operations
 
 SFN_INDEX = 0
+CONTEXT_PARAMETERS = {"sfn_execution_name": "$$.Execution.Name"}
+
+
+def print_ast(el):
+    print(ast.dump(el, indent=2))
 
 
 @dataclass
@@ -38,6 +44,14 @@ class CatchHandler:
     errors: List[str]
     body: List[sfn.IChainable]
     result_path: str = "$.error-info"
+
+
+class ExecutionContext(Enum):
+    id = "$$.Execution.Id"
+    input = "$$.Execution.Input"
+    name = "$$.Execution.Name"
+    role_arn = "$$.Execution.RoleArn"
+    start_time = "$$.Execution.StartTime"
 
 
 def concurrent(iterable, max_concurrency: Optional[int] = None):
@@ -1220,6 +1234,7 @@ class SFNScope:
 
     def build_parameters(self, call: ast.Call, func: Callable, gen_jsonpath=True):
         params = {}
+        # print_ast(call)
 
         # TODO: Handle kwonly args
         if hasattr(func, "definition"):
@@ -1314,6 +1329,12 @@ class SFNScope:
             )
         ):
             return getattr(JsonPath, arg_value.attr)
+        elif (
+            isinstance(arg_value, ast.Attribute)
+            and isinstance(arg_value.value, ast.Name)
+            and arg_value.value.id == "ExecutionContext"
+        ):
+            return getattr(ExecutionContext, arg_value.attr).value
         elif (
             isinstance(arg_value, ast.Call)
             and isinstance(arg_value.func, ast.Attribute)
@@ -1441,12 +1462,14 @@ def _get_parameters(func) -> (List[str], Mapping[str, Any]):
     # TODO: Should I use the AST instead of this to get the original parameters?
     sig = inspect.signature(func)
     req_params = [
-        p.name for p in sig.parameters.values() if p.default == inspect._empty
+        p.name
+        for p in sig.parameters.values()
+        if p.default == inspect._empty and p.name not in CONTEXT_PARAMETERS
     ]
     opt_params = {
         p.name: p.default
         for p in sig.parameters.values()
-        if p.default != inspect._empty
+        if p.default != inspect._empty and p.name not in CONTEXT_PARAMETERS
     }
     return req_params, opt_params
 
