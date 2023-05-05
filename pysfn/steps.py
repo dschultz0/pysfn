@@ -1051,14 +1051,24 @@ class SFNScope:
                 return_vars = list(func.definition.output.keys())
                 result_prefix = ".Payload"
             elif hasattr(func, "state_machine"):
+                execution_name = (
+                    params.pop("sfn_execution_name")
+                    if "sfn_execution_name" in params
+                    else None
+                )
+                task_params = {
+                    "state_machine": func.state_machine,
+                    "input_path": "$.register",
+                    "result_path": result_path,
+                    "integration_pattern": sfn.IntegrationPattern.RUN_JOB,
+                    "input": sfn.TaskInput.from_object(params),
+                }
+                if execution_name:
+                    task_params["name"] = execution_name
                 invoke = tasks.StepFunctionsStartExecution(
                     self.cdk_stack,
                     self.state_name(f"Call {func.state_machine.state_machine_name}"),
-                    state_machine=func.state_machine,
-                    input_path="$.register",
-                    result_path=result_path,
-                    integration_pattern=sfn.IntegrationPattern.RUN_JOB,
-                    input=sfn.TaskInput.from_object(params),
+                    **task_params,
                 )
                 return_vars = list(func.output.keys())
                 result_prefix = ".Output"
