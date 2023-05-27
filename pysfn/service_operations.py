@@ -190,7 +190,9 @@ def dynamo_update_item(table: ddb.Table, key: dict, attribute_updates: dict):
 
 
 def dynamo_export(
-    bucket: typing.Union[s3.IBucket, str], table: typing.Union[ddb.Table, str]
+    bucket: typing.Union[s3.IBucket, str],
+    table: typing.Union[ddb.Table, str],
+    export_format: str = "DYNAMODB_JSON",
 ) -> dict:
     pass
 
@@ -200,6 +202,7 @@ def build_dynamo_export_step(
     id_: str,
     bucket: typing.Union[s3.IBucket, str],
     table: typing.Union[ddb.Table, str],
+    export_format: str = "DYNAMODB_JSON",
 ):
     return tasks.CallAwsService(
         stack,
@@ -216,6 +219,7 @@ def build_dynamo_export_step(
             "TableArn": table.table_arn
             if isinstance(table, ddb.Table)
             else JsonPath.string_at(table),
+            "ExportFormat": export_format,
         },
     )
 
