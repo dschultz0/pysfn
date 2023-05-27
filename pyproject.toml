@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "pysfn"
-version = "0.1.11"
+version = "0.1.12"
 description = "Transpiler for AWS Step Functions"
 authors = ["Dave Schultz <dave@daveschultzconsulting.com>"]
 license = "MIT"
