@@ -58,6 +58,10 @@ def concurrent(iterable, max_concurrency: Optional[int] = None):
     pass
 
 
+def parallel(threads):
+    pass
+
+
 def event(func: Callable):
     pass
 
@@ -822,6 +826,7 @@ class SFNScope:
                     raise Exception("Unexpected assignment")
             else:
                 raise Exception("More targets than expected")
+
         if sub_target:
             prep = sfn.Pass(
                 self.cdk_stack,
