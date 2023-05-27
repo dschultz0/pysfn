@@ -1300,22 +1300,31 @@ class SFNScope:
     def build_optional_parameter_steps(self, optional_parameters: Mapping[str, Any]):
         chain = []
         next_ = None
-        for name, value in optional_parameters.items():
-            choice_name = self.state_name(f"Has {name}")
+        if optional_parameters:
+            self.variables.update(
+                {param: typing.Any for param in optional_parameters.keys()}
+            )
+            defaults = sfn.Pass(
+                self.cdk_stack,
+                self.state_name("Capture defaults"),
+                result_path="$.defaults",
+                parameters={
+                    k: "" if v is None else v for k, v in optional_parameters.items()
+                },
+            )
             assign = sfn.Pass(
                 self.cdk_stack,
-                self.state_name(f"Assign {name} default"),
-                input_path="$.register",
-                result_path="$.register",
-                parameters=self.build_register_assignment({name: value}),
+                self.state_name("Assign defaults"),
+                parameters={
+                    "register": JsonPath.json_merge(
+                        JsonPath.string_at("$.defaults"),
+                        JsonPath.string_at("$.register"),
+                    )
+                },
             )
-            choice = sfn.Choice(self.cdk_stack, choice_name)
-            choice.when(sfn.Condition.is_not_present(f"$.register.{name}"), assign)
-            chain.extend([choice, assign])
-            if next_:
-                next_ = advance(next_, choice, [choice.otherwise, assign.next])
-            else:
-                next_ = [choice.otherwise, assign.next]
+            defaults.next(assign)
+            chain = [defaults, assign]
+            next_ = assign.next
         return chain, next_
 
     def evaluate_path(self, stmt: ast.Subscript) -> str:
