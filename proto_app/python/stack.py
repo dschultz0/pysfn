@@ -33,6 +33,7 @@ from pysfn.steps import (
     await_token,
     execution_start_time,
     state_entered_time,
+    ExecutionContext,
 )
 from . import operations
 
@@ -331,7 +332,19 @@ class ProtoAppStack(Stack):
         @state_machine(self, "pysfn-batch")
         def batch(uris: List[str]):
             for uri in uris:
-                larger_variant(uri)
+                larger_variant(
+                    uri,
+                    sfn_execution_name=sfn.JsonPath.format(
+                        "{}-{}",
+                        sfn.JsonPath.string_at(ExecutionContext.name),
+                        sfn.JsonPath.array_get_item(
+                            sfn.JsonPath.string_split(sfn.JsonPath.uuid(), "-"), 1
+                        ),
+                    ),
+                )
+
+        """
+        """
 
         @state_machine(self, "pysfn-callback")
         def token_callback(str_value: str):
