@@ -445,3 +445,28 @@ class ProtoAppStack(Stack):
             result2 = Result(message="Woah")
             result.message = "success"
             return result
+
+        def sub_step(str_value: str, option: bool = False):
+            (
+                available,
+                mode,
+                option,
+                processing_seconds,
+                code_value,
+                type_value,
+            ) = step1(str_value, option)
+            return available
+
+        # @state_machine(self, "pysfn-simple-sub-step")
+        def simple2(str_value: str, list_value: List[int] = None, option: bool = False):
+            uri1: Union[str, None] = None
+            uri2: Union[str, None] = None
+            available = sub_step(str_value, option)
+            if available:
+                (available, list_value, uri1) = step2(str_value, list_value)
+            return (
+                available,
+                uri1,
+                uri2,
+                option,
+            )

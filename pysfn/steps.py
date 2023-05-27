@@ -1104,6 +1104,15 @@ class SFNScope:
                 return_vars = func.return_vars
                 result_prefix = ""
             else:
+                # STUB for handling sub functions, not working yet
+                # func_attrs = gather_function_attributes(func)
+                # func_tree = func_attrs.tree.body[0]
+                # with open(
+                #     pathlib.Path("build", f"{func_attrs.name}_ast.txt"), "w"
+                # ) as fp:
+                #     fp.write(ast.dump(func_tree, indent=2))
+                #chain, n = ChildScope(self).handle_body(func_tree.body)
+
                 raise Exception(
                     f"Function without an associated Lambda: {call.func.id}"
                 )
