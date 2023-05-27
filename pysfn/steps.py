@@ -1111,7 +1111,7 @@ class SFNScope:
                 #     pathlib.Path("build", f"{func_attrs.name}_ast.txt"), "w"
                 # ) as fp:
                 #     fp.write(ast.dump(func_tree, indent=2))
-                #chain, n = ChildScope(self).handle_body(func_tree.body)
+                # chain, n = ChildScope(self).handle_body(func_tree.body)
 
                 raise Exception(
                     f"Function without an associated Lambda: {call.func.id}"
@@ -1421,9 +1421,24 @@ class SFNScope:
             # TODO: Handle multi arg inputs
             arg = self.generate_value_repr(arg_value.args[0], gen_jsonpath=True)
             return getattr(JsonPath, arg_value.func.attr)(arg)
+        elif isinstance(arg_value, ast.Attribute):
+            value = self.resolve_attribute(arg_value)
+            if value:
+                return value
+
+        print(ast.dump(arg_value, indent=2))
+        raise Exception(f"Unexpected argument: {ast.dump(arg_value)}")
+
+    def resolve_attribute(self, attr: ast.Attribute):
+        obj = None
+        if isinstance(attr.value, ast.Name):
+            obj = self.fts.get_frame_value(attr.value.id)
+        elif isinstance(attr.value, ast.Attribute):
+            obj = self.resolve_attribute(attr.value)
+        if obj:
+            return getattr(obj, attr.attr)
         else:
-            print(ast.dump(arg_value, indent=2))
-            raise Exception(f"Unexpected argument: {ast.dump(arg_value)}")
+            return None
 
     def build_dataclass_default_structure(self, dc):
         dc_fields = dataclasses.fields(dc)
