@@ -879,8 +879,26 @@ class SFNScope:
                 )
                 list_step.next(flatten_step)
                 return [list_step, flatten_step], flatten_step.next
+                # elif left_type == int and right_type == int:
             else:
-                raise Exception("Addition is currently only supported for arrays")
+                step = sfn.Pass(
+                    self.cdk_stack,
+                    self.state_name(f"Assign {var_name}"),
+                    result_path="$.register",
+                    input_path="$.register",
+                    parameters=self.build_register_assignment(
+                        {
+                            var_name: JsonPath.string_at(
+                                f"States.MathAdd($.{left_name}, $.{right_name})"
+                            )
+                        }
+                    ),
+                )
+                return [step], step.next
+            # else:
+            #     raise Exception(
+            #         f"Addition is currently only supported for arrays and ints ({left_type}:{right_type})"
+            #     )
         else:
             value = self.generate_value_repr(stmt.value)
             assign = sfn.Pass(
